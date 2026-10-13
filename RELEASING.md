@@ -112,7 +112,15 @@ Record the developer machine's authoritative artifact hashes and exact toolchain
 tools/record-provenance.sh --skip-build
 ```
 
-The script reads the full Git commit, SDK pin, BepInEx pack pin, and installed Valheim dedicated-server build ID, then writes the current version's DLL and zip hashes to `tools/release/provenance.tsv`. Record provenance from a clean tree with every source change already committed; the only commit allowed between the recorded build and the tag is the one that adds the ledger row itself (the DLL embeds no commit SHA, so that commit does not change the artifacts). Without `--skip-build` the script performs a fresh clean build and package itself. It refuses to replace different existing inputs or hashes unless `--force` is given; use that flag only after reviewing why the artifacts changed. **Commit the provenance row before tagging.**
+The script reads the full Git commit, SDK pin, BepInEx pack pin, and installed Valheim dedicated-server build ID, then writes the current version's DLL and zip hashes to `tools/release/provenance.tsv`. Record provenance from a clean tree with every source change already committed; the only commit allowed between the recorded build and the tag is the one that adds the ledger row itself (the DLL embeds no commit SHA, so that commit does not change the artifacts). Without `--skip-build` the script performs a fresh clean build and package itself. It refuses to replace different existing inputs or hashes unless `--force` is given; use that flag only after reviewing why the artifacts changed.
+
+Then record the Thunderstore build (step 11) at the same commit:
+
+```bash
+tools/package-thunderstore.sh --record
+```
+
+It writes the version's row to `tools/release/thunderstore-provenance.tsv`. **Commit both ledger rows and `tools/contract-pass.txt` together before tagging.**
 
 ## 7. Smoke
 
@@ -198,16 +206,16 @@ Before calling a release complete:
 
 ## 11. Thunderstore distribution
 
-The [Thunderstore package](https://thunderstore.io/package/HumanGenome/ValheimOne/) carries the same DLL as GitHub Latest in Thunderstore's own layout. Build it after the GitHub release is published:
+The [Thunderstore package](https://thunderstore.io/package/HumanGenome/ValheimOne/) carries the Thunderstore build of the release: the same sources compiled with `-p:ValheimOneHostingCredit=false`, which leaves the sidebar footer link out of the live map page (`VALHEIMONE_NO_HOSTING_CREDIT`; `src/ValheimOne/LiveMap/tools/pack-web.sh` embeds a copy of `index.html` without the footer for that build). Nothing else differs from the GitHub DLL. Build it with:
 
 ```bash
 tools/package-thunderstore.sh
 ```
 
-It takes `BepInEx/plugins/ValheimOne.dll` out of `artifacts/release/ValheimOne-<version>.zip` (or the published asset passed with `--plugin-zip`), checks it against `tools/release/provenance.tsv`, and writes `artifacts/release/ValheimOne-<version>-thunderstore.zip` with `manifest.json`, `README.md`, `CHANGELOG.md`, `icon.png`, `LICENSE` and `plugins/ValheimOne.dll`. Nothing is compiled, no config file is shipped, and the dependency string follows the BepInEx pack pin in `tools/package-release.sh`.
+It compiles that build into `src/ValheimOne/bin/Thunderstore/`, runs `tools/ci/hosting-credit-gate.py --hosting-credit absent` (decompresses every embedded page and fails if the link is there) and the leak gate, and writes `artifacts/release/ValheimOne-<version>-thunderstore.zip` with `manifest.json`, `README.md`, `CHANGELOG.md`, `icon.png`, `LICENSE` and `plugins/ValheimOne.dll`. No config file is shipped, and the dependency string follows the BepInEx pack pin in `tools/package-release.sh`. The default run must reproduce the DLL and archive hashes recorded in `tools/release/thunderstore-provenance.tsv` (step 6); the Release workflow runs it after the GitHub artifacts and uploads the archive as a workflow artifact. Neither CI nor the script uploads anything to Thunderstore.
 
-- The page text is `tools/release/thunderstore/README.md`, not the repository README. Thunderstore's global rules reject packages that advertise an outside platform or service, so the Thunderstore page, manifest and changelog carry no hosting note, tracking link or offer. The script fails if one appears. When the repository README gains a feature or an install step, update the Thunderstore README in the same commit.
+- The page text is `tools/release/thunderstore/README.md`, not the repository README. Thunderstore's global rules reject packages that advertise an outside platform or service, so the Thunderstore page, manifest and changelog carry no hosting note, tracking link or offer, and its screenshots (`docs/screenshots/thunderstore/`) are the README shots without the footer line. The script fails if the text names one. When the repository README gains a feature or an install step, update the Thunderstore README in the same commit.
 - The changelog is the current minor line of `CHANGELOG.md`; the script fails when the released version has no section.
-- Thunderstore versions are immutable. The script refuses to replace an existing archive with different bytes; a changed package needs a new version.
-- Upload with the team's service-account token to the `valheim` community with the categories `mods`, `server-side`, `tools`, `utility` and the current game-update category. Never place the token in source.
+- Thunderstore versions are immutable. The script refuses to replace an existing archive or ledger row with different bytes; a changed package needs a new version.
+- Upload with the team's service-account token to the `valheim` community with the categories `mods`, `server-side`, `tools`, `utility`, `ai-generated` and the current game-update category. Never place the token in source.
 - An accepted upload is not a listing. Read `community_listings[].review_status` from `https://thunderstore.io/api/experimental/package/HumanGenome/ValheimOne/` and load `https://thunderstore.io/c/valheim/p/HumanGenome/ValheimOne/` signed out. A rejected listing stays rejected across new versions until a moderator approves it, and the rejection reason is shown only to a signed-in team member on that page.

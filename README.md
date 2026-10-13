@@ -209,6 +209,8 @@ verified: published v<version> plugin zip ValheimOne.dll <sha256>
 REPRODUCIBLE <version>
 ```
 
+The Thunderstore package is the same source built with `-p:ValheimOneHostingCredit=false`, which leaves the link in the map sidebar's footer out. At the release tag, `tools/package-thunderstore.sh` rebuilds that DLL and archive and checks both against `tools/release/thunderstore-provenance.tsv`.
+
 ---
 
 ## Getting Help

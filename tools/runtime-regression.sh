@@ -47,10 +47,12 @@ done
 [[ ! -f "$config/valheimone.cfg" ]] || cp -p "$config/valheimone.cfg" "$backup/valheimone.cfg"
 [[ ! -d "$config/runtime-regression" ]] || mv "$config/runtime-regression" "$backup/runtime-regression"
 trap cleanup EXIT
-cp "$repo/src/ValheimOne/bin/Release/net472/ValheimOne.dll" "$plugins/"
+# VALHEIMONE_PLUGIN_DLL tests another build of the plugin, such as the Thunderstore build.
+plugin_dll=${VALHEIMONE_PLUGIN_DLL:-"$repo/src/ValheimOne/bin/Release/net472/ValheimOne.dll"}
+cp "$plugin_dll" "$plugins/ValheimOne.dll"
 if [[ -n ${VALHEIMONE_PLUGIN_ZIP:-} ]]; then
     unzip -p "$VALHEIMONE_PLUGIN_ZIP" BepInEx/plugins/ValheimOne.dll > "$plugins/ValheimOne.dll"
-    cmp "$plugins/ValheimOne.dll" "$repo/src/ValheimOne/bin/Release/net472/ValheimOne.dll"
+    cmp "$plugins/ValheimOne.dll" "$plugin_dll"
 fi
 cp "$repo/tools/RuntimeRegression/bin/Release/net472/ValheimOne.RuntimeRegression.dll" "$plugins/"
 python3 - "$repo/tools/release/valheimone.cfg" "$config/valheimone.cfg" <<'PY'

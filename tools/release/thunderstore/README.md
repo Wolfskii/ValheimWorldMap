@@ -20,31 +20,31 @@ Keep the server and every PC on the same minor version, 0.13.x with 0.13.x.
 
 The whole world in a browser, drawn from the server seed and updated in real time. Players, ships, carts, portals, tombstones, wards and beds move as they happen. Fog of war follows recorded player trails and exploration shared through cartography tables. A heatmap, a world timelapse and a playtime, deaths and distance leaderboard are included.
 
-![Live map, admin view](https://github.com/HumanGenome/ValheimOne/raw/main/docs/screenshots/valheimone-live-map-20260909-r3.png)
+![Live map, admin view](https://github.com/HumanGenome/ValheimOne/raw/main/docs/screenshots/thunderstore/live-map-20261013.png)
 
 ### Three views
 
 **Admin** sees everything. **Shared** shows live players and the layers the owner allows, with no admin actions. **Public** is read-only with its own fog and layer settings. With `FogMode = trails` or `explored`, `FogHideUnexplored = true` gives an opaque cover and withholds unexplored region names and markers. Fog controls the displayed map, not access to the underlying terrain tiles.
 
-![Public map with explored fog](https://github.com/HumanGenome/ValheimOne/raw/main/docs/screenshots/livemap-public-fog.png)
+![Public map with explored fog](https://github.com/HumanGenome/ValheimOne/raw/main/docs/screenshots/thunderstore/public-fog-20261013.png)
 
 ### Dungeon interiors
 
 Click a dungeon entrance for a top-down room schematic read from the game's own generated layout, with live players drawn inside it.
 
-![Dungeon interior viewer](https://github.com/HumanGenome/ValheimOne/raw/main/docs/screenshots/dungeon-interior.png)
+![Dungeon interior viewer](https://github.com/HumanGenome/ValheimOne/raw/main/docs/screenshots/thunderstore/dungeon-interior-20261013.png)
 
 ### Item codex
 
 Searchable items and recipes: weight, stack size, tiers, damage, armour, full recipes with station requirements, what drops an item and what it is used to make.
 
-![Item codex](https://github.com/HumanGenome/ValheimOne/raw/main/docs/screenshots/valheimone-codex-20260909-r3.png)
+![Item codex](https://github.com/HumanGenome/ValheimOne/raw/main/docs/screenshots/thunderstore/codex-20261013.png)
 
 ### Browser admin console
 
 A live server log and a command box with history and autocomplete. It runs whitelisted commands through the game's own console: kick, ban, save, or a scheduled shutdown that warns players first. Off by default.
 
-![Browser admin console](https://github.com/HumanGenome/ValheimOne/raw/main/docs/screenshots/valheimone-console-20260909-r3.png)
+![Browser admin console](https://github.com/HumanGenome/ValheimOne/raw/main/docs/screenshots/thunderstore/console-20261013.png)
 
 ### Gameplay modules
 
@@ -86,4 +86,4 @@ Delete `ValheimOne.dll` and `BepInEx/config/valheimone.cfg`, or uninstall it fro
 
 ## Bugs and source
 
-Report bugs on [GitHub Issues](https://github.com/HumanGenome/ValheimOne/issues). The DLL is a deterministic build; the repository documents how to reproduce it byte for byte from the release tag.
+Report bugs on [GitHub Issues](https://github.com/HumanGenome/ValheimOne/issues). The DLL is a deterministic build: `tools/package-thunderstore.sh` at the release tag rebuilds this package byte for byte.

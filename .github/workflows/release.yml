@@ -199,6 +199,33 @@ jobs:
           echo "ARTIFACTS OK"
           cat "${sums}"
 
+      # The Thunderstore package carries the same sources built without the map's
+      # sidebar footer link. It is rebuilt here and must match the hashes recorded in
+      # tools/release/thunderstore-provenance.tsv. It is never attached to the GitHub
+      # release and nothing here uploads to Thunderstore.
+      - name: Thunderstore build without the map footer link
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Positive control: the gate finds the link in the GitHub DLL, so "absent" below is a real result.
+          python3 tools/ci/hosting-credit-gate.py "${RUNNER_TEMP}/shipped.dll" --hosting-credit present
+          tools/package-thunderstore.sh
+          ts_zip="artifacts/release/ValheimOne-${VERSION}-thunderstore.zip"
+          unzip -p "${ts_zip}" plugins/ValheimOne.dll > "${RUNNER_TEMP}/thunderstore.dll"
+          python3 tools/ci/hosting-credit-gate.py "${RUNNER_TEMP}/thunderstore.dll" --hosting-credit absent
+          if unzip -p "${ts_zip}" | grep -a -i -E 'survivalservers|server hosting by|utm_'; then
+            echo "::error::the Thunderstore archive mentions a host"
+            exit 1
+          fi
+
+      - name: Enabled map-sharing and chest runtime regressions from the Thunderstore DLL
+        shell: bash
+        run: |
+          set -euo pipefail
+          VALHEIMONE_PLUGIN_DLL="${RUNNER_TEMP}/thunderstore.dll" tools/runtime-regression.sh
+
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -207,6 +234,13 @@ jobs:
             artifacts/release/ValheimOne-${{ steps.version.outputs.version }}.zip
             artifacts/release/ValheimOne-full-${{ steps.version.outputs.version }}.zip
             artifacts/release/SHA256SUMS-${{ steps.version.outputs.version }}.txt
+          if-no-files-found: error
+
+      - name: Upload the Thunderstore archive as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ValheimOne-thunderstore-${{ steps.version.outputs.version }}
+          path: artifacts/release/ValheimOne-${{ steps.version.outputs.version }}-thunderstore.zip
           if-no-files-found: error
 
       - name: Create or update the draft release

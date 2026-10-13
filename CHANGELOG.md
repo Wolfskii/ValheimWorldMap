@@ -4,6 +4,12 @@ All notable changes to ValheimOne will be documented in this file. This project 
 
 ## [Unreleased]
 
+## [0.13.21] - 2026-10-13
+
+### Changed
+
+- The Thunderstore package now carries its own build of the plugin: the same sources compiled with `-p:ValheimOneHostingCredit=false`, which leaves the link in the live map's sidebar footer out of the map page. Nothing else differs, and the GitHub and Nexus downloads are unchanged apart from their version number. `tools/package-thunderstore.sh` builds it, checks the decompressed map pages for the link, and records the DLL and archive hashes in `tools/release/thunderstore-provenance.tsv`; the Release workflow rebuilds it and must match them byte for byte.
+
 ## [0.13.20] - 2026-10-12
 
 ### Changed

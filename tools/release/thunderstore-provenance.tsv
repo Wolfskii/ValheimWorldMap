@@ -1,0 +1,2 @@
+# Thunderstore build of each version (tools/package-thunderstore.sh): the same sources compiled with -p:ValheimOneHostingCredit=false, so the live map page has no sidebar footer link. commit is the content commit the row was recorded at; the default run of the script must reproduce both hashes byte for byte.
+version	commit	dll_sha256	thunderstore_zip_sha256
