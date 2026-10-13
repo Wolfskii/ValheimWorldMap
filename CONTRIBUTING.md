@@ -6,7 +6,7 @@ Thanks for helping build ValheimOne. Please discuss large features in an issue b
 
 Install the exact .NET SDK pinned in `global.json`; `./build.sh` refuses any other resolved SDK.
 
-1. Target the Valheim build named by `SupportedGameVersion` in `src/ValheimOne/Networking/VersionInfo.cs`, BepInEx 5.4.2333 and `net472`. Vanilla members whose shape differs between game builds go through `GameCompat` (newest shape first, older shape second) so one build runs on both.
+1. Target the Valheim build named by `SupportedGameVersion` in `src/ValheimOne/Networking/VersionInfo.cs`, BepInExPack_Valheim 5.4.2351 and `net472`. Vanilla members whose shape differs between game builds go through `GameCompat` (newest shape first, older shape second) so one build runs on both.
 2. Keep features isolated behind `IFeatureModule` and default every feature section to `Enabled = false`.
 3. Declare typed keys and client/server classification through `FeatureRegistry`.
 4. Run `./build.sh` and keep the build free of warnings and errors before submitting a change. If you can run a local dedicated server, `tools/contract-test.sh` and `tools/runtime-regression.sh` are described in [RELEASING.md](RELEASING.md).

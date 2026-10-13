@@ -4,6 +4,12 @@ All notable changes to ValheimOne will be documented in this file. This project 
 
 ## [Unreleased]
 
+## [0.13.20] - 2026-10-12
+
+### Changed
+
+- The Full download now carries BepInExPack_Valheim 5.4.2351 (BepInEx 5.4.23.5) instead of 5.4.2333. Its Linux loader is the stock UnityDoorstop 4.5.0 build, which starts on Linux servers older than Ubuntu 22.04 and Debian 12, and plugins that declare semver versions such as `1.1.0-beta.2` now load. The plugin itself is unchanged apart from its version number; verified on Valheim 1.0.17 with the new pack.
+
 ## [0.13.19] - 2026-10-12
 
 ### Fixed

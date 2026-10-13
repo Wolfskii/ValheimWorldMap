@@ -18,8 +18,8 @@ skip_build=false
 [[ "${1:-}" == "--skip-build" ]] && skip_build=true
 
 # BepInEx pack pin (denikson/BepInExPack_Valheim on Thunderstore).
-bepinex_pack_version="5.4.2333"
-bepinex_pack_sha256="5dd24ccbcaa9260f714b200f23c4c15547e2aa5f06906cafcc0dee56db1bf716"
+bepinex_pack_version="5.4.2351"
+bepinex_pack_sha256="bce631497976a93977ceb08e166712e6c31d15244956f89f17df092a9b62e29f"
 bepinex_pack_url="https://thunderstore.io/package/download/denikson/BepInExPack_Valheim/${bepinex_pack_version}/"
 bepinex_pack_cache="${repo_root}/tools/cache/BepInExPack_Valheim-${bepinex_pack_version}.zip"
 

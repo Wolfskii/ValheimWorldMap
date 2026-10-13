@@ -32,7 +32,7 @@ body:
     id: bepinex-version
     attributes:
       label: BepInEx version
-      placeholder: e.g. 5.4.2333
+      placeholder: e.g. 5.4.2351
     validations:
       required: true
   - type: input

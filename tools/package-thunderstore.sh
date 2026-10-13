@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # BepInEx pack dependency. Keep it equal to the pin in tools/package-release.sh.
-bepinex_dependency="denikson-BepInExPack_Valheim-5.4.2333"
+bepinex_dependency="denikson-BepInExPack_Valheim-5.4.2351"
 release_pin="$(sed -n 's/^bepinex_pack_version="\([^"]*\)".*/\1/p' "${repo_root}/tools/package-release.sh")"
 [[ "${bepinex_dependency}" == "denikson-BepInExPack_Valheim-${release_pin}" ]] \
     || fail "dependency ${bepinex_dependency} differs from the package-release.sh pin ${release_pin}"

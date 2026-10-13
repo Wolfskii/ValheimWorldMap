@@ -37,7 +37,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BEPINEX_VERSION: 5.4.2333
+  BEPINEX_VERSION: 5.4.2351
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
   DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
 

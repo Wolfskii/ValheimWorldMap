@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BEPINEX_VERSION: 5.4.2333
+  BEPINEX_VERSION: 5.4.2351
 
 jobs:
   build:
