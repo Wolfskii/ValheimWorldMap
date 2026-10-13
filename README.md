@@ -44,7 +44,7 @@ Turn on the heatmap to see where everyone has been over the last day or week, op
 
 ### 🔗 Share It With Your Players
 
-Three views, and you decide who gets which. **Admin** sees everything. **Shared** shows live players and every layer but never grants a single admin action. **Public** is read-only, with its own fog and public-layer settings. Check the tokenless link before sharing it. With `FogMode = trails` or `explored`, enable `FogHideUnexplored = true` for an opaque cover and to withhold unexplored region names, spawn and trader markers. Public viewers cannot turn that cover off through the map controls. The default fog is a translucent tint; Admin and Shared views still show the full terrain. Fog controls the displayed map, not access to the underlying terrain tiles.
+Three views, and you decide who gets which. **Admin** sees everything. **Shared** shows live players and the layers you allow, with no admin actions. **Public** is a read-only link with its own fog and layer settings. Fog can be a light tint or a solid cover that hides everything nobody has explored yet, including region names and markers, and Public viewers cannot switch the cover off. The settings are under [Fog and Shared map layers](#fog-and-shared-map-layers).
 
 ![ValheimOne public map with explored fog](docs/screenshots/livemap-public-fog.png)
 
@@ -72,7 +72,7 @@ A live server log and a command box with history and autocomplete, running white
 
 ![ValheimOne web admin console](docs/screenshots/valheimone-console-20260909-r3.png)
 
-### ⚙️ Server Rules That Actually Stick
+### ⚙️ Optional Gameplay Modules
 
 Twenty-six opt-in modules covering carry weight, stamina, food, drops, gathering, build rules, portals, taming, raids, production speeds and more. Everything is off until you turn it on, and most values hot-reload without a restart.
 
@@ -150,6 +150,43 @@ Building from source is `./build.sh`; see [RELEASING.md](RELEASING.md) for packa
 
 ---
 
+## Configuration
+
+Everything lives in one file: `BepInEx/config/valheimone.cfg`. Every gameplay section is off by default, so a fresh install changes nothing until you opt in.
+
+Start the server once to generate the file, then enable the sections you want:
+
+```ini
+[Player]
+
+Enabled = true
+BaseMaximumWeight = 450
+MegingjordBuff = 200
+```
+
+Saving the file applies most changes live, without a restart. Preserve your existing file when you update.
+
+- Full module list and what each one does: [docs/gameplay-modules.md](docs/gameplay-modules.md)
+- Query and status endpoints: [docs/query.md](docs/query.md)
+
+<a id="fog-and-shared-map-layers"></a>
+
+### Fog and Shared map layers
+
+All of these live in `[LiveMap]`. Set `FogMode = trails` or `explored` to record the fog you want to display. The default fog is a translucent tint over the full terrain.
+
+`FogHideUnexplored = true` gives the Public view a solid cover and withholds unexplored region names and spawn and trader markers. Public viewers cannot turn it off. Check the tokenless link before you share it.
+
+`SharedFog = true` gives Shared viewers the same locked cover while keeping chat and stats. It defaults to false.
+
+`SharedPoiGroups = all` keeps every point-of-interest layer in the Shared view. Use `none` to hide them, or a space-separated list such as `spawn trader` to show only those groups. The [group keys](docs/query.md#shared-point-of-interest-groups) are in the API reference.
+
+Admins can switch on **Fog preview** under Layers to keep unexplored areas covered on their own map. It starts off, also hides unexplored markers and region names, and does not change admin permissions. It needs `FogMode` set.
+
+Fog changes what the map draws. It does not restrict access to the underlying terrain images.
+
+---
+
 ## Verifying the binary
 
 A byte-for-byte reproduction requires a Git clone checked out at the exact release tag, the .NET SDK pinned in `global.json`, and a clean working tree. The compile is deterministic and embeds no commit SHA or build-host paths, so identical sources and toolchain produce an identical DLL.
@@ -171,46 +208,6 @@ verified: clean build ValheimOne.dll <sha256>
 verified: published v<version> plugin zip ValheimOne.dll <sha256>
 REPRODUCIBLE <version>
 ```
-
----
-
-## Configuration
-
-### Fog and Shared map layers
-
-In `[LiveMap]`, set `FogMode = trails` or `explored` to record the fog you want to display.
-`SharedFog = true` gives Shared viewers a locked opaque cover and hides unexplored
-points of interest and region names while preserving chat and stats. It defaults to false.
-Public opaque fog remains controlled by `FogHideUnexplored`.
-
-`SharedPoiGroups = all` preserves all point-of-interest layers. Use `none` to hide them,
-or a space-separated selection such as `spawn trader` to show only those groups.
-The setting applies to both the layer list and direct point-of-interest requests.
-[Available group keys](docs/query.md#shared-point-of-interest-groups) are documented in the API reference.
-
-Admins can enable **Fog preview** in Layers when `FogMode` is enabled. It starts off and
-remembers the choice separately from Public fog. Turning it on also hides unexplored
-point-of-interest markers and region names; it does not change admin permissions.
-Fog is a map-display feature and does not restrict access to underlying terrain images.
-These settings apply live after the configuration reloads; preserve existing configuration when updating.
-
-
-Everything lives in one file: `BepInEx/config/valheimone.cfg`. Every gameplay section is off by default, so a fresh install changes nothing until you opt in.
-
-Start the server once to generate the file, then enable the sections you want:
-
-```ini
-[Player]
-
-Enabled = true
-BaseMaximumWeight = 450
-MegingjordBuff = 200
-```
-
-Saving the file applies changed values live. Only changes that alter patch topology need a restart.
-
-- Full module list and what each one does: [docs/gameplay-modules.md](docs/gameplay-modules.md)
-- Query and status endpoints: [docs/query.md](docs/query.md)
 
 ---
 

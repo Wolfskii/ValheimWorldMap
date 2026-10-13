@@ -8,7 +8,7 @@ Report it through GitHub's private vulnerability reporting instead:
 
 **https://github.com/HumanGenome/ValheimOne/security/advisories/new**
 
-(Also reachable from the repo's **Security** tab → **Advisories** → **Report a vulnerability**.) The report stays private between you and the maintainers, and it gives us a place to draft the fix and credit you when it ships. This is the only reporting channel — there is no security mailing address.
+(Also reachable from the repo's **Security** tab → **Advisories** → **Report a vulnerability**.) The report stays private between you and the maintainers, and it gives us a place to draft the fix and credit you when it ships. This is the only reporting channel; there is no security mailing address.
 
 Include:
 - A description of the vulnerability
@@ -22,7 +22,7 @@ We aim to acknowledge reports within 72 hours and provide a triage update within
 ## Scope
 
 In scope:
-- Any path that lets a lower view tier read data belonging to a higher one — public or shared reaching admin-tier map data, player platform IDs, pins, or the crossplay join code
+- Any path that lets a lower view tier read data belonging to a higher one: public or shared reaching admin-tier map data, player platform IDs, pins, or the crossplay join code
 - A tokenless or empty-token request being served anything beyond the intended public surface
 - Authentication bypass on the admin console or any authenticated `/api/*` route
 - Command injection through the console command box, or execution of a command outside the allowlist
@@ -34,7 +34,7 @@ Out of scope:
 - Hardware-host vulnerabilities (those belong to your hosting provider)
 - Vulnerabilities in Valheim itself (report to Iron Gate) or in BepInEx/Harmony
 - Vulnerabilities in other BepInEx plugins running alongside ValheimOne
-- Anti-cheat / cheating concerns — ValheimOne does not provide anti-cheat
+- Anti-cheat and cheating concerns. ValheimOne does not provide anti-cheat
 - Admin console commands doing what an admin asked for. Protect the admin token instead.
 - Deliberately publishing a share link, or setting `PublicPins = true` and then finding pins on the public view
 - Exposing the map port to the internet without a reverse proxy. ValheimOne does not terminate TLS.

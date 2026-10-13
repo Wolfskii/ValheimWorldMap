@@ -68,6 +68,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
             TestProductionSettings();
             TestWeatherDamage();
             TestFoodDegradation();
+            TestRegionLabels();
             string result = $"RUNTIME REGRESSION PASS assertions={_assertions} game={(global::Version.GetVersionString())}";
             Logger.LogInfo(result);
             File.WriteAllText(Path.Combine(_root, "result.txt"), result + "\n");
@@ -790,6 +791,44 @@ public sealed class RuntimeRegression : BaseUnityPlugin
         AccessTools.Field(target as Type ?? target.GetType(), name).SetValue(target is Type ? null : target, value);
     private static void SetProperty(object target, string name, object value) =>
         AccessTools.Property(target.GetType(), name).SetValue(target, value, null);
+    private void TestRegionLabels()
+    {
+        Type catalog = AccessTools.TypeByName("ValheimOne.LiveMap.BiomeRegionCatalog");
+        Type snapshot = AccessTools.TypeByName("ValheimOne.LiveMap.BiomeRegionSnapshot");
+        int perBiome = (int)AccessTools.Field(catalog, "MaximumRegionsPerBiome").GetRawConstantValue();
+        Check(perBiome == 6, "region labels keep six candidates per biome");
+        IList NewCandidates() => (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(snapshot));
+        object Region(string biome, long area) =>
+            Activator.CreateInstance(snapshot, biome, biome, 0f, 0f, area);
+        string Biome(object region) => (string)ReadMember(region, "Biome")!;
+        long Area(object region) => (long)ReadMember(region, "Area")!;
+
+        // Thirty large Mistlands patches used to take every slot ahead of a small swamp.
+        IList crowded = NewCandidates();
+        for (int i = 0; i < 30; i++) crowded.Add(Region("mistlands", 9_000_000 - i));
+        for (int i = 0; i < 3; i++) crowded.Add(Region("swamp", 300_000 - i));
+        object[] picked = ((Array)Call(catalog, "SelectRegions", crowded)!).Cast<object>().ToArray();
+        Check(picked.Count(r => Biome(r) == "mistlands") == perBiome && picked.Count(r => Biome(r) == "swamp") == 3,
+            "a crowded biome cannot push smaller swamps off the region list");
+        Check(picked.Zip(picked.Skip(1), (a, b) => Area(a) >= Area(b)).All(x => x),
+            "region candidates stay ordered largest first");
+
+        IList many = NewCandidates();
+        for (int biome = 0; biome < 12; biome++)
+            for (int i = 0; i < 10; i++) many.Add(Region("b" + biome, 1_000_000 - (biome * 10) - i));
+        Check(((Array)Call(catalog, "SelectRegions", many)!).Length == 60, "region list keeps its 60-name ceiling");
+
+        // The real catalog on the fixture world, sampled from the live world generator.
+        Func<bool> never = () => false;
+        object[] world = ((Array)Call(catalog, "Build", WorldGenerator.instance, never)!).Cast<object>().ToArray();
+        Dictionary<string, int> counts = world.GroupBy(Biome).ToDictionary(g => g.Key, g => g.Count());
+        Logger.LogInfo("REGION LABELS " + string.Join(" ", counts.OrderBy(kv => kv.Key).Select(kv => kv.Key + "=" + kv.Value)));
+        Check(world.Length > 0 && world.Length <= 60 && counts.Values.All(c => c <= perBiome),
+            "fixture world region list respects the per-biome and total limits");
+        Check(counts.ContainsKey("swamp") && counts.ContainsKey("mountain"),
+            "fixture world names its swamps and mountains");
+    }
+
     private static object? Call(object target, string name, params object[] args) =>
         AccessTools.Method(target as Type ?? target.GetType(), name).Invoke(target is Type ? null : target, args);
 }

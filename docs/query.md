@@ -35,14 +35,14 @@ curl http://<server-ip>:8790/api/status
 | `uptimeSeconds` | Seconds since the dedicated server process started. Available at every authorized view tier, including public status responses when `StatusPublic` permits them. |
 | `timeOfDay` | 0..1 fraction of the current day. |
 | `players` | Players visible at the caller's view level (public callers only see players sharing their position unless names/positions are public). |
-| `view` | `admin`, `shared`, or `public` — which view level answered the request. |
+| `view` | `admin`, `shared`, or `public`: which view level answered the request. |
 | `console` | `true` only for admin-token requests when the web console is enabled. |
 | `map.state` / `map.progress` | World-render lifecycle for the map front-end. |
 | `map.fog` | Fog available to this view: `mode` is `off`, `trails` or `explored`; `revision` advances as ground is revealed; `worldSpan` is its fixed world extent. `hide` selects an opaque cover, while `locked` requires it. Public opaque fog and enabled Shared fog are locked; Admin has an optional preview. `poiPolicy` reports the Shared point-of-interest allowlist. |
 
 ## Access rules
 
-- `[LiveMap] StatusPublic = true` (default): `/api/status` answers **without a token** even when the map itself is token-locked (`AccessToken` set, `PublicView = false`). Tokenless callers get the public view. This is intended for hosting-panel status polls — set it to `false` to require map access for status too.
+- `[LiveMap] StatusPublic = true` (default): `/api/status` answers **without a token** even when the map itself is token-locked (`AccessToken` set, `PublicView = false`). Tokenless callers get the public view. This is intended for hosting-panel status polls. Set it to `false` to require map access for status too.
 - `/api/catalog` is always public because it contains static game data only. All remaining endpoints follow the normal map rules: `AccessToken` grants the admin view; `PublicView` controls whether tokenless visitors get the read-only public map.
 
 ## GET /api/catalog
@@ -93,7 +93,7 @@ With a non-empty `AccessToken`, the same port serves admin actions; console-spec
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/api/console/exec` | POST `{"command":"..."}` | Run a console command via the game's own console path. Commands must be in `ConsoleWhitelist` unless `AllowAllCommands = true` (non-whitelisted → `403`). Returns `{"ok":true,"output":[...]}`. |
-| `/api/console/log` | GET `?cursor=N&max=M` | Cursor-based server-log polling from the in-memory ring buffer (`ConsoleLogLines`, default 500). Returns `{"cursor":N,"lines":[...]}` — pass the returned cursor back to get only new lines. |
+| `/api/console/log` | GET `?cursor=N&max=M` | Cursor-based server-log polling from the in-memory ring buffer (`ConsoleLogLines`, default 500). Returns `{"cursor":N,"lines":[...]}`; pass the returned cursor back to get only new lines. |
 | `/api/console/meta` | GET | Whitelist, `allowAll` flag, and known command metadata for autocomplete. |
 | `/api/admin/kick` | POST `{"player":"name/ip/userID"}` | Kick a player. |
 | `/api/admin/ban` / `/api/admin/unban` | POST `{"player":"..."}` | Ban / unban. |
@@ -107,7 +107,7 @@ With a non-empty `AccessToken`, the same port serves admin actions; console-spec
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/events` | GET (SSE) | Server-Sent-Events stream. Map-view auth rules apply. Named events include `players`, change-detected `status`, new `chat` messages for admin/shared views, and — for console-authorized admin tokens only — incremental `log` batches. Sends `retry: 5000`; capped at 8 concurrent streams (`409` beyond). |
+| `/api/events` | GET (SSE) | Server-Sent-Events stream. Map-view auth rules apply. Named events include `players`, change-detected `status`, new `chat` messages for admin/shared views, and incremental `log` batches for console-authorized admin tokens only. Sends `retry: 5000`; capped at 8 concurrent streams (`409` beyond). |
 | `/api/chat` | GET | Admin/shared only; public returns `404`. Returns the current 32-message ring buffer oldest-first as `{"chats":[{"sequence":1,"x":0,"z":0,"playerName":"...","text":"...","shout":false,"unixMs":1720000000000}]}`. Player chat follows `MirrorChat`; server-originated shouts remain available when mirroring is off. |
 | `/api/heatmap` | GET `?window=24h|7d` | Admin/shared only; public returns `404`. Returns the aggregate activity grid used by the default-off Activity Heatmap layer. |
 | `/api/timelapse` | GET | Admin/shared only by default; public returns `404` unless `PublicTimelapse = true`. Returns the frame index, disk usage, capture interval, and active retention bounds. |

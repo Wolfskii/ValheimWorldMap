@@ -4,6 +4,17 @@ All notable changes to ValheimOne will be documented in this file. This project 
 
 ## [Unreleased]
 
+## [0.13.19] - 2026-10-12
+
+### Fixed
+
+- Swamps and mountains get names on the live map. The map kept the 60 largest biome patches, and on every seed sampled the large Mistlands, Deep North and ocean patches filled all 60 before the first swamp or mountain, so neither biome was ever labelled and Meadows got one or two names. Each biome now keeps its six largest patches, still at most 60 names in total, and the browser's four-per-biome display limit is unchanged.
+- The `[Player]` section now reports itself as synced in the startup log, matching how it works: carry weight, pickup range and rested time are applied by each player's own game. Config sync was already sending it to modded players.
+
+### Changed
+
+- Verified against Valheim 1.0.17 (dedicated-server build 25730807); `SupportedGameVersion` is `1.0.17`, so the startup banner no longer warns on the current game. All 484 static references and 51 reflection targets resolve, the Harmony patch contract is unchanged at 31 modules and 75 patched methods, and the worldgen fingerprint is unchanged.
+
 ## [0.13.18] - 2026-09-22
 
 ### Fixed

@@ -6,10 +6,10 @@ Thanks for helping build ValheimOne. Please discuss large features in an issue b
 
 Install the exact .NET SDK pinned in `global.json`; `./build.sh` refuses any other resolved SDK.
 
-1. Target Valheim 1.0.7, BepInEx 5.4.2333, and `net472` unless the compatibility target changes deliberately. Vanilla members whose shape differs between 1.0 and 0.221 go through `GameCompat` (1.0 shape first, 0.221 second) so one build runs on both.
+1. Target the Valheim build named by `SupportedGameVersion` in `src/ValheimOne/Networking/VersionInfo.cs`, BepInEx 5.4.2333 and `net472`. Vanilla members whose shape differs between game builds go through `GameCompat` (newest shape first, older shape second) so one build runs on both.
 2. Keep features isolated behind `IFeatureModule` and default every feature section to `Enabled = false`.
 3. Declare typed keys and client/server classification through `FeatureRegistry`.
-4. Run `./build.sh` and keep the build free of errors before submitting a change.
+4. Run `./build.sh` and keep the build free of warnings and errors before submitting a change. If you can run a local dedicated server, `tools/contract-test.sh` and `tools/runtime-regression.sh` are described in [RELEASING.md](RELEASING.md).
 5. Update `README.md` and `CHANGELOG.md` when behavior or operator-facing configuration changes.
 
 ## Development tools
@@ -18,7 +18,7 @@ Install the exact .NET SDK pinned in `global.json`; `./build.sh` refuses any oth
 
 ## Verify before you patch
 
-Check every target member's existence and runtime visibility against the original Valheim game assembly before writing a patch. Use a verified public API where one exists and cached reflection for vanilla-private members. Do not use transpilers. Install patches at startup and keep their behavior behind runtime `Enabled` guards so synchronized configuration can hot-enable features safely.
+Check every target member's existence and runtime visibility against the original Valheim game assembly before writing a patch. Use a verified public API where one exists and cached reflection for vanilla-private members. Prefer prefixes and postfixes: the host player-cap rewrites in `ServerHostModule` are the only transpilers, and a new one needs its reason in the pull request. Install patches at startup and keep their behavior behind runtime `Enabled` guards so synchronized configuration can hot-enable features safely.
 
 ## Clean-room requirement
 

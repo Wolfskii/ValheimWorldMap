@@ -24,7 +24,7 @@ The whole world in a browser, drawn from the server seed and updated in real tim
 
 ### Three views
 
-**Admin** sees everything. **Shared** shows live players and every layer but grants no admin action. **Public** is read-only with its own fog and layer settings. With `FogMode = trails` or `explored`, `FogHideUnexplored = true` gives an opaque cover and withholds unexplored region names and markers. Fog controls the displayed map, not access to the underlying terrain tiles.
+**Admin** sees everything. **Shared** shows live players and the layers the owner allows, with no admin actions. **Public** is read-only with its own fog and layer settings. With `FogMode = trails` or `explored`, `FogHideUnexplored = true` gives an opaque cover and withholds unexplored region names and markers. Fog controls the displayed map, not access to the underlying terrain tiles.
 
 ![Public map with explored fog](https://github.com/HumanGenome/ValheimOne/raw/main/docs/screenshots/livemap-public-fog.png)
 
@@ -78,7 +78,7 @@ The server needs [BepInExPack_Valheim](https://thunderstore.io/c/valheim/p/denik
 
 ## Compatibility
 
-Tested on the Valheim 1.0.15 dedicated server with BepInExPack_Valheim 5.4.2333. After a Valheim patch, check the changelog before you update.
+Tested on the Valheim 1.0.17 dedicated server with BepInExPack_Valheim 5.4.2333. After a Valheim patch, check the changelog before you update.
 
 ## Remove it
 

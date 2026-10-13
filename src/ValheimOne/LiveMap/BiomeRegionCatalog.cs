@@ -9,6 +9,12 @@ internal static class BiomeRegionCatalog
     private const int MinimumRegionCells = 12;
     private const int MaximumRegions = 60;
 
+    // The browser draws at most four names per biome, largest first, and skips any that
+    // collide. Six candidates per biome leave it two spares. Without a per-biome limit the
+    // 60 largest patches went to Mistlands, Deep North and ocean basins, and swamps and
+    // mountains (largest patches 25-42 cells on sampled seeds) never got a name at all.
+    internal const int MaximumRegionsPerBiome = 6;
+
     public static BiomeRegionSnapshot[] Build(
         WorldGenerator generator,
         Func<bool> isStopping)
@@ -112,13 +118,32 @@ internal static class BiomeRegionCatalog
                 area));
         }
 
-        regions.Sort(CompareRegions);
-        if (regions.Count > MaximumRegions)
+        return SelectRegions(regions);
+    }
+
+    // Largest patches first, at most MaximumRegionsPerBiome per biome, MaximumRegions overall.
+    internal static BiomeRegionSnapshot[] SelectRegions(List<BiomeRegionSnapshot> candidates)
+    {
+        candidates.Sort(CompareRegions);
+        var perBiome = new Dictionary<string, int>(StringComparer.Ordinal);
+        var selected = new List<BiomeRegionSnapshot>(Math.Min(candidates.Count, MaximumRegions));
+        foreach (BiomeRegionSnapshot candidate in candidates)
         {
-            regions.RemoveRange(MaximumRegions, regions.Count - MaximumRegions);
+            perBiome.TryGetValue(candidate.Biome, out int count);
+            if (count >= MaximumRegionsPerBiome)
+            {
+                continue;
+            }
+
+            perBiome[candidate.Biome] = count + 1;
+            selected.Add(candidate);
+            if (selected.Count == MaximumRegions)
+            {
+                break;
+            }
         }
 
-        return regions.ToArray();
+        return selected.ToArray();
     }
 
     private static void TryEnqueue(

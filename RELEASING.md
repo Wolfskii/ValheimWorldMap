@@ -2,7 +2,7 @@
 
 The release flow is: **version → reference config → build → contract test → package → record provenance → smoke → tag → CI-verified GitHub release draft.**
 
-Pushing a `v*` tag runs the **Release** workflow (`.github/workflows/release.yml`). It re-runs the version and contract gates, rebuilds and packages on a GitHub runner, and requires those artifacts to match the hashes recorded from the developer machine before it creates a GitHub release **as a draft**. CI never publishes a release — publishing is always a human decision.
+Pushing a `v*` tag runs the **Release** workflow (`.github/workflows/release.yml`). It re-runs the version and contract gates, rebuilds and packages on a GitHub runner, and requires those artifacts to match the hashes recorded from the developer machine before it creates a GitHub release **as a draft**. CI never publishes a release; publishing is always a human decision.
 
 Steps 1–8 are the local release checklist. The workflow repeats the automatable checks in step 9; the local contract-pass record and provenance row must both be committed before tagging.
 
@@ -34,7 +34,7 @@ cp <repo>/src/ValheimOne/bin/Release/net472/ValheimOne.dll testserver/BepInEx/pl
 cp testserver/BepInEx/config/valheimone.cfg <repo>/tools/release/valheimone.cfg
 ```
 
-Diff before committing — only intended new/changed keys should appear. The packaging script fails if the reference config has `Enabled = true` outside `[Server]` or `[ActivityLog]`, or is missing a feature section that exists in source (stale-config guard).
+Diff before committing: only intended new/changed keys should appear. The packaging script fails if the reference config has `Enabled = true` outside `[Server]` or `[ActivityLog]`, or is missing a feature section that exists in source (stale-config guard).
 
 ## 3. Build
 
@@ -54,9 +54,9 @@ Run the deterministic contract test before every release and after every Valheim
 tools/contract-test.sh
 ```
 
-The contract run installs a pinned config — the pristine reference config with the `tools/fixtures/contract.cfg` overlay applied ([Query] enabled) — and restores the harness's prior config afterward, so the enabled-module fingerprint does not depend on local harness state. `CONTRACT PASS` means the pinned world's worldgen fingerprint, Harmony patch contract, and module registration contract still match the checked-in golden fingerprint. `CONTRACT DRIFT` requires review: a worldgen hash change means map caches must be invalidated and worldgen changes reviewed; patch drift reports broken patch points in `failed=`; and module-count drift indicates registration changes.
+The contract run installs a pinned config (the pristine reference config with the `tools/fixtures/contract.cfg` overlay applied, [Query] enabled) and restores the harness's prior config afterward, so the enabled-module fingerprint does not depend on local harness state. `CONTRACT PASS` means the pinned world's worldgen fingerprint, Harmony patch contract, and module registration contract still match the checked-in golden fingerprint. `CONTRACT DRIFT` requires review: a worldgen hash change means map caches must be invalidated and worldgen changes reviewed; patch drift reports broken patch points in `failed=`; and module-count drift indicates registration changes.
 
-On every pass the script writes `tools/contract-pass.txt` — the version it passed at, the SHA-256 of the golden fingerprint it matched, the commit, and the timestamp. **Commit that file with the release.** The Release workflow runs the same contract test on its own runner, and additionally refuses to release a version with no recorded local pass, or whose recorded pass was taken against a different golden fingerprint (`tools/ci/assert-contract-pass.sh`).
+On every pass the script writes `tools/contract-pass.txt`: the version it passed at, the SHA-256 of the golden fingerprint it matched, the commit, and the timestamp. **Commit that file with the release.** The Release workflow runs the same contract test on its own runner, and additionally refuses to release a version with no recorded local pass, or whose recorded pass was taken against a different golden fingerprint (`tools/ci/assert-contract-pass.sh`).
 
 After reviewing an intentional change, re-baseline and check in the updated golden fingerprint with:
 
@@ -190,7 +190,7 @@ Publishing a stable release triggers synchronization. A manual recovery run supp
 
 Before calling a release complete:
 
-- Verify the workflow passed: both versions, Nexus's archive hash index, the primary download, the page version and the changelog agree with GitHub Latest. Page version and scan state come from the current GraphQL response; legacy v1 mod metadata can remain stale after a successful upload. Quarantined, pending or unknown scan states fail verification even when archive hashes match.
+- Verify the workflow passed: both versions, Nexus's archive hash index, the primary download, the page version and the changelog agree with GitHub Latest. Page version and scan state come from the current GraphQL response; legacy v1 mod metadata can remain stale after a successful upload. Quarantined, pending or unknown scan states fail verification even when archive hashes match. The one exception is the six-hour scheduled check, which reports a quarantined Full archive as a warning so a standing moderation hold does not fail every run; release and manual runs still fail on it.
 - Open the public Files page and verify both download buttons are usable. API metadata and a successful upload do not prove virus-scan clearance. Download both files through the normal authorized flow and compare SHA-256 with the release manifest.
 - Confirm the plugin file still requires BepInEx and Full does not require installing the loader twice. The upload API's requirements-popup flag does not itself create a dependency.
 - Check that the description, install requirements, permissions and media still match the released product. Gameplay modules marked Synced require ValheimOne on each participating PC; the map and server tools do not.

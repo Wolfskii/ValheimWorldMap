@@ -56,7 +56,8 @@ public sealed class PlayerModule : IFeatureModule
 
     public bool IsEnabled => _feature.Enabled.Value;
 
-    public FeatureClassification Classification => FeatureClassification.ServerAuthoritative;
+    // Carry weight, pickup and rested time are computed by each player's own game.
+    public FeatureClassification Classification => FeatureClassification.Synced;
 
     public void ApplyPatches(Harmony harmony)
     {
