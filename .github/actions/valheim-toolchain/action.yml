@@ -258,7 +258,8 @@ runs:
 
         mkdir -p "${testserver}/BepInEx/plugins" "${testserver}/BepInEx/config" "${testserver}/doorstop_libs"
         rsync -a --delete --exclude='/plugins/' --exclude='/config/' "${pack}/BepInEx/" "${testserver}/BepInEx/"
-        rsync -a "${pack}/BepInEx/plugins/" "${testserver}/BepInEx/plugins/"
+        # BepInExPack_Valheim 5.4.2351+ ships no empty plugins folder; BepInEx creates it on start.
+        if [[ -d "${pack}/BepInEx/plugins" ]]; then rsync -a "${pack}/BepInEx/plugins/" "${testserver}/BepInEx/plugins/"; fi
         rsync -a "${pack}/BepInEx/config/" "${testserver}/BepInEx/config/"
         rsync -a --delete "${pack}/doorstop_libs/" "${testserver}/doorstop_libs/"
         rsync -a "${pack}/doorstop_config.ini" "${pack}/winhttp.dll" "${testserver}/"
