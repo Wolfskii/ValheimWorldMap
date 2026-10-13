@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -36,12 +36,15 @@ jobs:
   mirror:
     needs: checks
     if: github.repository == 'humangenome/ValheimOne' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'release' && github.event.release.prerelease == false))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       GH_TOKEN: ${{ github.token }}
       NEXUSMODS_API_KEY: ${{ secrets.NEXUSMODS_API_KEY }}
       RELEASE_TAG: ${{ github.event.release.tag_name }}
+      # The six-hourly drift check reports a standing Full-archive quarantine as a warning;
+      # release and manual runs still fail on it.
+      NEXUS_KNOWN_FULL_QUARANTINE: ${{ github.event_name == 'schedule' && '1' || '' }}
     steps:
       - name: Check out release tooling
         uses: actions/checkout@v4

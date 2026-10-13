@@ -112,6 +112,31 @@ class ReleaseSafety(unittest.TestCase):
             with self.subTest(status=status), self.assertRaises(ValueError):
                 self.verify_downloads(response)
 
+    def test_scheduled_check_tolerates_only_a_quarantined_full_archive(self):
+        expected = {"plugin": {"game_scoped_id": "22082"}, "full": {"game_scoped_id": "22083"}}
+        response = self.download_status()
+        response["data"]["modFiles"][1]["scannedV2"] = "QUARANTINED"
+        self.assertEqual(sync.verify_public_downloads(response, "0.13.10", expected, {"full"}), {"full"})
+        with self.assertRaises(ValueError):
+            sync.verify_public_downloads(response, "0.13.10", expected)
+        for status in ["QUEUED", "NOT_SCANNED", "unknown", None]:
+            pending = self.download_status()
+            pending["data"]["modFiles"][1]["scannedV2"] = status
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                sync.verify_public_downloads(pending, "0.13.10", expected, {"full"})
+        plugin = self.download_status()
+        plugin["data"]["modFiles"][0]["scannedV2"] = "QUARANTINED"
+        with self.assertRaises(ValueError):
+            sync.verify_public_downloads(plugin, "0.13.10", expected, {"full"})
+        with self.assertRaises(ValueError):
+            sync.verify_public_downloads(plugin, "0.13.10", expected, {"plugin", "full"})
+        controls = self.download_status()
+        controls["data"]["modFiles"][1]["scannedV2"] = "QUARANTINED"
+        controls["data"]["modFiles"][1]["manager"] = 0
+        with self.assertRaises(ValueError):
+            sync.verify_public_downloads(controls, "0.13.10", expected, {"full"})
+        self.assertEqual(sync.verify_public_downloads(self.download_status(), "0.13.10", expected, {"full"}), set())
+
     def test_approved_scan_states_and_historical_quarantine_are_distinct(self):
         for status in ["VERIFIED", "INTERNALLY_VERIFIED", "MANUALLY_VERIFIED"]:
             response = self.download_status()

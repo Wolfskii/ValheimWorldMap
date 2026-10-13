@@ -144,12 +144,20 @@ def public_download_status(game_id):
     })
 
 
-def verify_public_downloads(response, version, expected):
+def verify_public_downloads(response, version, expected, tolerated_quarantine=frozenset()):
+    """Return the kinds whose current archive is quarantined but tolerated by the caller.
+
+    Only the Full archive can be tolerated, and only as QUARANTINED: the scheduled drift
+    check reports a known quarantine as a warning instead of failing every six hours.
+    Release and manual runs pass nothing here and still fail on any quarantine."""
+    if not set(tolerated_quarantine) <= {"full"}:
+        raise ValueError("Only the Full archive's quarantine can be tolerated")
     if set(expected) != {"plugin", "full"}:
         raise ValueError("Both Nexus download versions must be present")
     if response.get("errors"):
         raise ValueError("Nexus page/scan query failed; download status is unverified")
     data = response.get("data") or {}
+    quarantined = set()
     mod = data.get("mod") or {}
     if mod.get("name") != "ValheimOne" or mod.get("status") != "published":
         raise ValueError("Nexus page is not the expected published mod")
@@ -169,11 +177,17 @@ def verify_public_downloads(response, version, expected):
                 or file.get("requirementsAlert") != int(kind == "plugin")):
             raise ValueError(f"Nexus {kind} primary/download/requirements controls do not match")
         status = file.get("scannedV2")
+        if status == "QUARANTINED" and kind in tolerated_quarantine:
+            quarantined.add(kind)
+            print(f"::warning::Nexus {kind} archive {version} is quarantined; moderator review is a manual "
+                  "decision. Do not reupload. The plugin archive remains the primary download.")
+            continue
         if status == "QUARANTINED":
             raise ValueError(f"Nexus {kind} archive is quarantined; moderator review required. Do not reupload.")
         if status not in ("VERIFIED", "INTERNALLY_VERIFIED", "MANUALLY_VERIFIED"):
             raise ValueError(f"Nexus {kind} archive has not passed its scan; download remains unverified")
         print(f"Nexus {kind}: scan cleared and download controls verified")
+    return quarantined
 
 
 def write_outputs(values):
@@ -228,9 +242,18 @@ def main():
         print(f"Nexus {kind}: {'version present' if current else 'upload required'}")
     # Quarantined files can disappear from the legacy hash index. Report the
     # actual moderation state before that lookup can obscure it with a 404.
+    # Set only by the scheduled drift check (nexus.yml): a standing Full quarantine is
+    # reported as a warning there instead of failing the run four times a day.
+    tolerated = {"full"} if os.environ.get("NEXUS_KNOWN_FULL_QUARANTINE") == "1" else set()
+    quarantined = set()
     if len(current_files) == 2:
-        verify_public_downloads(public_download_status(mod["game_id"]), version, current_files)
+        quarantined = verify_public_downloads(
+            public_download_status(mod["game_id"]), version, current_files, tolerated)
     for kind, filename in zip(["plugin", "full"], names):
+        if kind in quarantined:
+            # Quarantined files drop out of the legacy hash index; a 404 there says nothing new.
+            print(f"Nexus {kind}: hash-index skipped while quarantined")
+            continue
         if kind in current_files:
             verify_indexed_hash(folder, filename, current_files[kind])
             print(f"Nexus {kind}: hash-index verified")
@@ -238,8 +261,12 @@ def main():
         changelogs = nexus(f"/v1/games/valheim/mods/{MOD_PAGE_ID}/changelogs.json")
         if version not in changelogs:
             raise ValueError("Nexus release changelog is missing")
-        print("Nexus versions, archive index, primary download, page version and changelog verified")
-        print("Scan state verified. Check both public download buttons and download the archives normally.")
+        if quarantined:
+            print("Nexus versions, primary download, page version and changelog verified; "
+                  f"{', '.join(sorted(quarantined))} archive still quarantined (known, warning only)")
+        else:
+            print("Nexus versions, archive index, primary download, page version and changelog verified")
+            print("Scan state verified. Check both public download buttons and download the archives normally.")
     write_outputs(outputs)
 
 
