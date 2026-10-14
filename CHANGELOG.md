@@ -4,6 +4,10 @@ All notable changes to ValheimOne will be documented in this file. This project 
 
 ## [Unreleased]
 
+### Changed
+
+- Nexus Mods now carries only the plugin-only download. The Full download, with BepInEx included, is on the GitHub release page.
+
 ## [0.13.21] - 2026-10-13
 
 ### Changed

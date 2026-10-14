@@ -6,7 +6,7 @@ Pushing a `v*` tag runs the **Release** workflow (`.github/workflows/release.yml
 
 Steps 1–8 are the local release checklist. The workflow repeats the automatable checks in step 9; the local contract-pass record and provenance row must both be committed before tagging.
 
-After publishing on GitHub, complete step 10. Nexus must always match the latest public GitHub release; a GitHub-only publication is not a completed distribution release.
+After publishing on GitHub, complete step 10. Nexus's plugin-only download must always match the latest public GitHub release; a GitHub-only publication is not a completed distribution release.
 
 ## 1. Version bump
 
@@ -188,9 +188,9 @@ gh release create v<version> --draft --title "ValheimOne <version>" \
 
 ## 10. Nexus distribution
 
-The [Nexus listing](https://www.nexusmods.com/valheim/mods/3571) must carry the same plugin-only and Full archives as GitHub Latest, with the same version and release notes. Never rebuild or repackage a Nexus-only variant.
+The [Nexus listing](https://www.nexusmods.com/valheim/mods/3571) must carry the same plugin-only archive as GitHub Latest, with the same version and release notes. Never rebuild or repackage a Nexus-only variant. The Full archive (plugin plus BepInEx) is published on the GitHub release only: Nexus quarantined it on every release from 0.13.10 to 0.13.21, so it is no longer mirrored. The old Full file group on the Nexus page is ignored by the workflow; it is not required and never uploaded to.
 
-The **Nexus release mirror** workflow uses the official Nexus Mods upload action, pinned to a reviewed commit. It downloads the already-published GitHub assets, checks their SHA-256 values and sizes, resolves the two existing Nexus file groups, and uploads only missing versions. Plugin-only stays the primary mod-manager download with its requirements popup; Full stays a secondary manual download. Previous versions are retained until the new downloads pass their scans.
+The **Nexus release mirror** workflow uses the official Nexus Mods upload action, pinned to a reviewed commit. It downloads the already-published GitHub assets (both zips and the checksum manifest), checks their SHA-256 values and sizes, resolves the existing plugin-only file group, and uploads the plugin archive only when that version is missing. Plugin-only stays the primary mod-manager download with its requirements popup. Previous versions are retained until the new download passes its scan.
 
 Set the repository secret `NEXUSMODS_API_KEY` using an author-owned key from [Nexus API settings](https://www.nexusmods.com/settings/api-keys). Never place keys, browser cookies or session tokens in source. Missing credentials fail the workflow visibly.
 
@@ -198,9 +198,9 @@ Publishing a stable release triggers synchronization. A manual recovery run supp
 
 Before calling a release complete:
 
-- Verify the workflow passed: both versions, Nexus's archive hash index, the primary download, the page version and the changelog agree with GitHub Latest. Page version and scan state come from the current GraphQL response; legacy v1 mod metadata can remain stale after a successful upload. Quarantined, pending or unknown scan states fail verification even when archive hashes match. The one exception is the six-hour scheduled check, which reports a quarantined Full archive as a warning so a standing moderation hold does not fail every run; release and manual runs still fail on it.
-- Open the public Files page and verify both download buttons are usable. API metadata and a successful upload do not prove virus-scan clearance. Download both files through the normal authorized flow and compare SHA-256 with the release manifest.
-- Confirm the plugin file still requires BepInEx and Full does not require installing the loader twice. The upload API's requirements-popup flag does not itself create a dependency.
+- Verify the workflow passed: the plugin version, Nexus's archive hash index, the primary download, the page version and the changelog agree with GitHub Latest. Page version and scan state come from the current GraphQL response; legacy v1 mod metadata can remain stale after a successful upload. A quarantined, pending or unknown scan state on the plugin fails verification even when the archive hash matches, in every run including the six-hour scheduled check. A scan still pending right after a release fails the release run; the next scheduled check reads it again.
+- Open the public Files page and verify the plugin download button is usable. API metadata and a successful upload do not prove virus-scan clearance. Download the file through the normal authorized flow and compare SHA-256 with the release manifest.
+- Confirm the plugin file still requires BepInEx. The upload API's requirements-popup flag does not itself create a dependency.
 - Check that the description, install requirements, permissions and media still match the released product. Gameplay modules marked Synced require ValheimOne on each participating PC; the map and server tools do not.
 - If a file is quarantined, preserve it and request [Nexus moderator review](https://help.nexusmods.com/article/117-why-has-my-mod-been-quarantined) with the public source, build instructions and release checksums. Do not call a quarantine harmless without evidence or delete it to evade review. Record the blocker and leave distribution verification incomplete until downloads work.
 

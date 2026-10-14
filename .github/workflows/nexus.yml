@@ -10,7 +10,7 @@ name: Nexus release mirror
   workflow_dispatch:
     inputs:
       upload:
-        description: Mirror missing files from the latest published stable release
+        description: Upload the plugin-only archive if Nexus lacks the latest published stable release
         type: boolean
         default: false
   schedule:
@@ -42,9 +42,6 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       NEXUSMODS_API_KEY: ${{ secrets.NEXUSMODS_API_KEY }}
       RELEASE_TAG: ${{ github.event.release.tag_name }}
-      # The six-hourly drift check reports a standing Full-archive quarantine as a warning;
-      # release and manual runs still fail on it.
-      NEXUS_KNOWN_FULL_QUARANTINE: ${{ github.event_name == 'schedule' && '1' || '' }}
     steps:
       - name: Check out release tooling
         uses: actions/checkout@v4
@@ -75,23 +72,6 @@ jobs:
           mod_id: ${{ steps.prepare.outputs.mod_id }}
           changelog: ${{ steps.prepare.outputs.notes }}
 
-      - name: Mirror Full archive
-        if: steps.prepare.outputs.full_upload == 'true' && (github.event_name == 'release' || inputs.upload == true)
-        uses: Nexus-Mods/upload-action@c96019556046053aa26044b44396cd38929daf23
-        with:
-          api_key: ${{ secrets.NEXUSMODS_API_KEY }}
-          file_id: ${{ steps.prepare.outputs.full_id }}
-          filename: ${{ runner.temp }}/nexus-release/ValheimOne-full-${{ steps.prepare.outputs.version }}.zip
-          version: ${{ steps.prepare.outputs.version }}
-          display_name: ValheimOne Full ${{ steps.prepare.outputs.version }}
-          description: ${{ steps.prepare.outputs.notes }}
-          category: main
-          archive_existing_version: false
-          primary_mod_manager_download: false
-          allow_mod_manager_download: false
-          show_requirements_pop_up: false
-          update_mod_version: false
-
       - name: Verify Nexus version and archive readback
         run: python3 tools/ci/nexus-release.py verify --directory "$RUNNER_TEMP/nexus-release"
 
@@ -104,6 +84,7 @@ jobs:
             echo '## Nexus release mirror'
             echo "Status: $JOB_STATUS"
             echo 'Listing: https://www.nexusmods.com/valheim/mods/3571?tab=files'
-            echo 'Check both public download buttons for scan/quarantine status before closing the release.'
-            echo 'If Nexus blocks a file, retain it for moderator review; do not repeatedly upload it.'
+            echo 'Nexus carries the plugin-only archive. The Full archive (plugin plus BepInEx) is on the GitHub release only.'
+            echo 'Check the plugin download button for scan/quarantine status before closing the release.'
+            echo 'If Nexus blocks the file, retain it for moderator review; do not repeatedly upload it.'
           } >> "$GITHUB_STEP_SUMMARY"

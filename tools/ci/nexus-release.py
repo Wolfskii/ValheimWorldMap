@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Prepare and verify Nexus mirrors of published GitHub release assets. No API writes."""
+"""Prepare and verify the Nexus mirror of a published GitHub release. No API writes.
+
+Nexus carries the plugin-only archive. The Full archive (plugin plus BepInEx) is published
+on GitHub releases only: Nexus quarantined it on every release from 0.13.10 to 0.13.21.
+Both GitHub zips and the checksum manifest are still verified before anything is mirrored.
+An old Full file group left on the Nexus page is ignored: it is not required, not read
+and never uploaded to."""
 
 import argparse
 import hashlib
@@ -16,6 +22,8 @@ import uuid
 
 REPOSITORY = "humangenome/ValheimOne"
 MOD_PAGE_ID = "3571"
+PLUGIN_GROUP = r"ValheimOne(?: \d+\.\d+\.\d+)?"
+FULL_GROUP = r"ValheimOne Full(?: \d+\.\d+\.\d+)?"
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -60,6 +68,7 @@ def release_version(release, requested=""):
 
 
 def verify_assets(folder, release, version):
+    """Check both GitHub release zips and the checksum manifest (digest, size, manifest)."""
     names = [f"ValheimOne-{version}.zip", f"ValheimOne-full-{version}.zip"]
     sums_name = f"SHA256SUMS-{version}.txt"
     assets = {a["name"]: a for a in release["assets"]}
@@ -82,24 +91,25 @@ def verify_assets(folder, release, version):
     return names
 
 
-def select_files(files):
-    selected = {}
+def select_plugin_group(files):
+    """Return the ID of the one existing plugin-only file group.
+
+    An old Full file group is tolerated and left alone: it is not required and the
+    mirror never reads its versions or uploads to it."""
+    plugin = []
     for file in files:
         name = file.get("name", "")
-        for kind, pattern in (
-            ("plugin", r"ValheimOne(?: \d+\.\d+\.\d+)?"),
-            ("full", r"ValheimOne Full(?: \d+\.\d+\.\d+)?"),
-        ):
-            if re.fullmatch(pattern, name, re.IGNORECASE):
-                if kind in selected:
-                    raise ValueError(f"Multiple Nexus {kind} file groups; review their API IDs")
-                selected[kind] = str(file["id"])
-    if set(selected) != {"plugin", "full"}:
-        raise ValueError("Expected the existing plugin and Full file groups on Nexus")
-    for file_id in selected.values():
-        if not re.fullmatch(r"[A-Za-z0-9-]+", file_id):
-            raise ValueError("Unexpected Nexus file ID")
-    return selected
+        if re.fullmatch(PLUGIN_GROUP, name, re.IGNORECASE):
+            plugin.append(str(file["id"]))
+        elif re.fullmatch(FULL_GROUP, name, re.IGNORECASE):
+            print("Nexus Full: old file group ignored; the Full archive is on GitHub releases only")
+    if not plugin:
+        raise ValueError("Expected the existing plugin-only file group on Nexus")
+    if len(plugin) > 1:
+        raise ValueError("Multiple Nexus plugin file groups; review their API IDs")
+    if not re.fullmatch(r"[A-Za-z0-9-]+", plugin[0]):
+        raise ValueError("Unexpected Nexus file ID")
+    return plugin[0]
 
 
 def existing_version(versions, version):
@@ -144,50 +154,36 @@ def public_download_status(game_id):
     })
 
 
-def verify_public_downloads(response, version, expected, tolerated_quarantine=frozenset()):
-    """Return the kinds whose current archive is quarantined but tolerated by the caller.
+def verify_public_downloads(response, version, current):
+    """Check the page version and the plugin-only download's controls and scan state.
 
-    Only the Full archive can be tolerated, and only as QUARANTINED: the scheduled drift
-    check reports a known quarantine as a warning instead of failing every six hours.
-    Release and manual runs pass nothing here and still fail on any quarantine."""
-    if not set(tolerated_quarantine) <= {"full"}:
-        raise ValueError("Only the Full archive's quarantine can be tolerated")
-    if set(expected) != {"plugin", "full"}:
-        raise ValueError("Both Nexus download versions must be present")
+    Only the plugin file is read. Every other file on the page, including an old Full
+    archive in any scan state, is ignored. A quarantined, pending or unknown scan on the
+    plugin fails the check."""
     if response.get("errors"):
         raise ValueError("Nexus page/scan query failed; download status is unverified")
     data = response.get("data") or {}
-    quarantined = set()
     mod = data.get("mod") or {}
     if mod.get("name") != "ValheimOne" or mod.get("status") != "published":
         raise ValueError("Nexus page is not the expected published mod")
     if mod.get("version") != version:
         raise ValueError("Nexus page version does not match GitHub Latest")
-    for kind, current in expected.items():
-        matches = [f for f in (data.get("modFiles") or [])
-                   if str(f.get("fileId")) == str(current["game_scoped_id"])]
-        if len(matches) != 1:
-            raise ValueError(f"Nexus {kind} download status is missing or ambiguous")
-        file = matches[0]
-        if file.get("version") != version or file.get("category") != "MAIN":
-            raise ValueError(f"Nexus {kind} download is not the expected active version")
-        # Legacy manager=1 disables mod-manager downloads; 0 enables them.
-        if (file.get("primary") != int(kind == "plugin")
-                or file.get("manager") != int(kind == "full")
-                or file.get("requirementsAlert") != int(kind == "plugin")):
-            raise ValueError(f"Nexus {kind} primary/download/requirements controls do not match")
-        status = file.get("scannedV2")
-        if status == "QUARANTINED" and kind in tolerated_quarantine:
-            quarantined.add(kind)
-            print(f"::warning::Nexus {kind} archive {version} is quarantined; moderator review is a manual "
-                  "decision. Do not reupload. The plugin archive remains the primary download.")
-            continue
-        if status == "QUARANTINED":
-            raise ValueError(f"Nexus {kind} archive is quarantined; moderator review required. Do not reupload.")
-        if status not in ("VERIFIED", "INTERNALLY_VERIFIED", "MANUALLY_VERIFIED"):
-            raise ValueError(f"Nexus {kind} archive has not passed its scan; download remains unverified")
-        print(f"Nexus {kind}: scan cleared and download controls verified")
-    return quarantined
+    matches = [f for f in (data.get("modFiles") or [])
+               if str(f.get("fileId")) == str(current["game_scoped_id"])]
+    if len(matches) != 1:
+        raise ValueError("Nexus plugin download status is missing or ambiguous")
+    file = matches[0]
+    if file.get("version") != version or file.get("category") != "MAIN":
+        raise ValueError("Nexus plugin download is not the expected active version")
+    # Legacy manager=1 disables mod-manager downloads; 0 enables them.
+    if file.get("primary") != 1 or file.get("manager") != 0 or file.get("requirementsAlert") != 1:
+        raise ValueError("Nexus plugin primary/download/requirements controls do not match")
+    status = file.get("scannedV2")
+    if status == "QUARANTINED":
+        raise ValueError("Nexus plugin archive is quarantined; moderator review required. Do not reupload.")
+    if status not in ("VERIFIED", "INTERNALLY_VERIFIED", "MANUALLY_VERIFIED"):
+        raise ValueError("Nexus plugin archive has not passed its scan; download remains unverified")
+    print("Nexus plugin: scan cleared and download controls verified")
 
 
 def write_outputs(values):
@@ -215,7 +211,7 @@ def main():
                 "gh", "release", "download", release["tag_name"], "--repo", REPOSITORY,
                 "--dir", str(folder), "--pattern", name, "--clobber",
             ], check=True, stdout=subprocess.DEVNULL)
-    names = verify_assets(folder, release, version)
+    plugin_archive, _full_archive = verify_assets(folder, release, version)
     if args.mode == "assets":
         print(f"GitHub {release['tag_name']}: both archives and checksum manifest verified")
         return
@@ -225,48 +221,28 @@ def main():
     mod_id = str(mod["id"])
     if not re.fullmatch(r"[A-Za-z0-9-]+", mod_id):
         raise ValueError("Unexpected Nexus mod ID")
-    files = select_files(nexus(f"/v3/mods/{mod_id}/files")["data"]["mod_files"])
-    outputs = {"version": version, "mod_id": mod_id, "notes": release["body"]}
-    current_files = {}
-    for kind, filename in zip(["plugin", "full"], names):
-        versions = nexus(f"/v3/mod-files/{files[kind]}/versions")["data"]["versions"]
-        current = existing_version(versions, version)
-        outputs[kind + "_id"] = files[kind]
-        outputs[kind + "_upload"] = "false" if current else "true"
-        if current:
-            current_files[kind] = current
-            if bool(current.get("is_primary")) != (kind == "plugin"):
-                raise ValueError("Plugin-only must be the primary Nexus download")
-        elif args.mode == "verify":
-            raise ValueError(f"Nexus {kind} version is missing")
-        print(f"Nexus {kind}: {'version present' if current else 'upload required'}")
-    # Quarantined files can disappear from the legacy hash index. Report the
-    # actual moderation state before that lookup can obscure it with a 404.
-    # Set only by the scheduled drift check (nexus.yml): a standing Full quarantine is
-    # reported as a warning there instead of failing the run four times a day.
-    tolerated = {"full"} if os.environ.get("NEXUS_KNOWN_FULL_QUARANTINE") == "1" else set()
-    quarantined = set()
-    if len(current_files) == 2:
-        quarantined = verify_public_downloads(
-            public_download_status(mod["game_id"]), version, current_files, tolerated)
-    for kind, filename in zip(["plugin", "full"], names):
-        if kind in quarantined:
-            # Quarantined files drop out of the legacy hash index; a 404 there says nothing new.
-            print(f"Nexus {kind}: hash-index skipped while quarantined")
-            continue
-        if kind in current_files:
-            verify_indexed_hash(folder, filename, current_files[kind])
-            print(f"Nexus {kind}: hash-index verified")
+    plugin_id = select_plugin_group(nexus(f"/v3/mods/{mod_id}/files")["data"]["mod_files"])
+    versions = nexus(f"/v3/mod-files/{plugin_id}/versions")["data"]["versions"]
+    current = existing_version(versions, version)
+    outputs = {"version": version, "mod_id": mod_id, "notes": release["body"],
+               "plugin_id": plugin_id, "plugin_upload": "false" if current else "true"}
+    if not current and args.mode == "verify":
+        raise ValueError("Nexus plugin version is missing")
+    print(f"Nexus plugin: {'version present' if current else 'upload required'}")
+    if current:
+        if not current.get("is_primary"):
+            raise ValueError("Plugin-only must be the primary Nexus download")
+        # Quarantined files can disappear from the legacy hash index. Report the
+        # actual moderation state before that lookup can obscure it with a 404.
+        verify_public_downloads(public_download_status(mod["game_id"]), version, current)
+        verify_indexed_hash(folder, plugin_archive, current)
+        print("Nexus plugin: hash-index verified")
     if args.mode == "verify":
         changelogs = nexus(f"/v1/games/valheim/mods/{MOD_PAGE_ID}/changelogs.json")
         if version not in changelogs:
             raise ValueError("Nexus release changelog is missing")
-        if quarantined:
-            print("Nexus versions, primary download, page version and changelog verified; "
-                  f"{', '.join(sorted(quarantined))} archive still quarantined (known, warning only)")
-        else:
-            print("Nexus versions, archive index, primary download, page version and changelog verified")
-            print("Scan state verified. Check both public download buttons and download the archives normally.")
+        print("Nexus plugin version, archive index, primary download, page version and changelog verified")
+        print("Scan state verified. Check the plugin download button on the Files page and download it normally.")
     write_outputs(outputs)
 
 
