@@ -61,8 +61,8 @@ jobs:
           file_id: ${{ steps.prepare.outputs.plugin_id }}
           filename: ${{ runner.temp }}/nexus-release/ValheimOne-${{ steps.prepare.outputs.version }}.zip
           version: ${{ steps.prepare.outputs.version }}
-          display_name: ValheimOne ${{ steps.prepare.outputs.version }}
-          description: ${{ steps.prepare.outputs.notes }}
+          display_name: ${{ steps.prepare.outputs.display_name }}
+          description: ${{ steps.prepare.outputs.description }}
           category: main
           archive_existing_version: false
           primary_mod_manager_download: true
@@ -70,7 +70,7 @@ jobs:
           show_requirements_pop_up: true
           update_mod_version: true
           mod_id: ${{ steps.prepare.outputs.mod_id }}
-          changelog: ${{ steps.prepare.outputs.notes }}
+          changelog: ${{ steps.prepare.outputs.changelog }}
 
       - name: Verify Nexus version and archive readback
         run: python3 tools/ci/nexus-release.py verify --directory "$RUNNER_TEMP/nexus-release"

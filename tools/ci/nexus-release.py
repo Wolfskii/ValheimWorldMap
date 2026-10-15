@@ -24,6 +24,18 @@ REPOSITORY = "humangenome/ValheimOne"
 MOD_PAGE_ID = "3571"
 PLUGIN_GROUP = r"ValheimOne(?: \d+\.\d+\.\d+)?"
 FULL_GROUP = r"ValheimOne Full(?: \d+\.\d+\.\d+)?"
+# Nexus field limits. Version, name and changelog: the API's own schema
+# (https://api.nexusmods.com/openapi.yaml, CreateModFileVersionRequest and
+# AddModChangelogEntriesRequest, read 2026-10-14). Description: the Nexus file edit form
+# rejects more than 255 characters (seen 2026-10-14). The API took the whole 738-character
+# release body on 2026-10-13, but a file stored with more than 255 cannot be edited in the
+# form afterwards, and the API may adopt the same limit. So the description is one short
+# fixed line and the full notes go in the changelog.
+VERSION_MAX = 20  # well inside Nexus's 50; keeps the name and description bounded
+NAME_MAX = 50
+NAME_PATTERN = r"[a-zA-Z0-9 _'().-]+"
+DESCRIPTION_MAX = 255
+CHANGELOG_MAX = 65535
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -62,9 +74,41 @@ def release_version(release, requested=""):
         raise ValueError("Expected a stable vMAJOR.MINOR.PATCH release")
     if release.get("draft", True) or release.get("prerelease", True) or not release.get("published_at"):
         raise ValueError("Only a published stable release can be mirrored")
+    if len(tag) - 1 > VERSION_MAX:
+        raise ValueError("Release version is longer than the Nexus mirror accepts")
     if requested and requested != tag:
         raise ValueError("Requested release is no longer Latest; refusing to downgrade Nexus")
     return tag[1:]
+
+
+def release_url(version):
+    return f"https://github.com/{REPOSITORY}/releases/tag/v{version}"
+
+
+def nexus_display_name(version):
+    name = f"ValheimOne {version}"
+    if len(name) > NAME_MAX or not re.fullmatch(NAME_PATTERN, name):
+        raise ValueError("Nexus file name is too long or has characters Nexus refuses")
+    return name
+
+
+def nexus_description(version):
+    """One short fixed line; never the release body (see DESCRIPTION_MAX)."""
+    text = f"ValheimOne {version}. Full release notes: {release_url(version)}"
+    if len(text) > DESCRIPTION_MAX:
+        raise ValueError(f"Nexus file description is over {DESCRIPTION_MAX} characters")
+    return text
+
+
+def nexus_changelog(body, version):
+    """The full release notes, cut with a link back only if they pass Nexus's limit."""
+    text = (body or "").strip()
+    if not text:
+        raise ValueError("Release notes are empty; Nexus needs a changelog entry")
+    if len(text) <= CHANGELOG_MAX:
+        return text
+    tail = f"\n\nFull release notes: {release_url(version)}"
+    return text[:CHANGELOG_MAX - len(tail)].rstrip() + tail
 
 
 def verify_assets(folder, release, version):
@@ -224,7 +268,10 @@ def main():
     plugin_id = select_plugin_group(nexus(f"/v3/mods/{mod_id}/files")["data"]["mod_files"])
     versions = nexus(f"/v3/mod-files/{plugin_id}/versions")["data"]["versions"]
     current = existing_version(versions, version)
-    outputs = {"version": version, "mod_id": mod_id, "notes": release["body"],
+    outputs = {"version": version, "mod_id": mod_id,
+               "display_name": nexus_display_name(version),
+               "description": nexus_description(version),
+               "changelog": nexus_changelog(release.get("body"), version),
                "plugin_id": plugin_id, "plugin_upload": "false" if current else "true"}
     if not current and args.mode == "verify":
         raise ValueError("Nexus plugin version is missing")

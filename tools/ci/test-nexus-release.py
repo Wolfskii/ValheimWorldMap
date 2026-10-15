@@ -8,6 +8,7 @@ import importlib.util
 import io
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -17,6 +18,13 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location("nexus_release", Path(__file__).with_name("nexus-release.py"))
 sync = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sync)
+WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "nexus.yml"
+
+
+def parse_outputs(text):
+    """GITHUB_OUTPUT heredoc records (key<<delimiter / value / delimiter) as a dict."""
+    return {key: value for key, _, value in
+            re.findall(r"^(\w+)<<(value_\w+)\n(.*?)\n\2$", text, re.M | re.S)}
 
 
 class ReleaseSafety(unittest.TestCase):
@@ -245,7 +253,8 @@ class PluginOnlyMirror(unittest.TestCase):
 
     def test_verify_passes_plugin_only_with_old_full_group_present(self):
         keys, text, log = self.run_mode("verify")
-        self.assertEqual(keys, {"version", "mod_id", "notes", "plugin_id", "plugin_upload"})
+        self.assertEqual(keys, {"version", "mod_id", "display_name", "description", "changelog",
+                                "plugin_id", "plugin_upload"})
         self.assertIn(self.PLUGIN_GROUP, text)
         self.assertNotIn(self.FULL_GROUP, text)
         self.assertIn("Full: old file group ignored", log)
@@ -283,6 +292,72 @@ class PluginOnlyMirror(unittest.TestCase):
         (self.folder / f"ValheimOne-full-{self.VERSION}.zip").write_bytes(b"tampered")
         with self.assertRaisesRegex(ValueError, "digest/size"):
             self.run_mode("verify")
+
+    def test_description_is_one_short_line_whatever_the_release_notes(self):
+        # Nexus's file form refuses a description over 255 characters (2026-10-14).
+        url = f"https://github.com/humangenome/ValheimOne/releases/tag/v{self.VERSION}"
+        for body in ["notes", "x" * 300, "## Fixed\n\n- " + "long line " * 8000]:
+            self.plugin_versions = []
+            self.release["body"] = body
+            with self.subTest(body_length=len(body)):
+                _, text, _ = self.run_mode("prepare")
+                outputs = parse_outputs(text)
+                self.assertEqual(outputs["description"],
+                                 f"ValheimOne {self.VERSION}. Full release notes: {url}")
+                self.assertLessEqual(len(outputs["description"]), 255)
+                self.assertLessEqual(len(outputs["changelog"]), sync.CHANGELOG_MAX)
+                if len(body) <= sync.CHANGELOG_MAX:
+                    self.assertEqual(outputs["changelog"], body)
+                else:
+                    self.assertTrue(outputs["changelog"].endswith(f"Full release notes: {url}"))
+
+    def test_empty_release_notes_fail_before_upload(self):
+        self.plugin_versions = []
+        self.release["body"] = "  \n"
+        with self.assertRaisesRegex(ValueError, "Release notes are empty"):
+            self.run_mode("prepare")
+
+    def test_workflow_sends_only_the_bounded_outputs(self):
+        text = WORKFLOW.read_text()
+        step = text.split("uses: Nexus-Mods/upload-action@", 1)[1].split("\n      - name:", 1)[0]
+        inputs = dict(re.findall(r"^          (\w+): (.*)$", step, re.M))
+        for field in ["description", "changelog", "display_name", "version"]:
+            self.assertEqual(inputs[field], "${{ steps.prepare.outputs.%s }}" % field)
+        self.plugin_versions = []
+        keys, _, _ = self.run_mode("prepare")
+        used = set(re.findall(r"steps\.prepare\.outputs\.(\w+)", text))
+        self.assertLessEqual(used, keys, "the workflow reads an output the script never writes")
+
+
+class NexusFieldLimits(unittest.TestCase):
+    """Every text field the upload sends stays inside Nexus's limits, for any accepted version."""
+
+    LONGEST = "999999.999999.999999"
+
+    def release(self, tag):
+        return {"tag_name": tag, "draft": False, "prerelease": False, "published_at": "2026-10-14T00:00:00Z"}
+
+    def test_longest_accepted_version_keeps_description_and_name_inside_the_limits(self):
+        self.assertEqual(len(self.LONGEST), sync.VERSION_MAX)
+        version = sync.release_version(self.release("v" + self.LONGEST))
+        description = sync.nexus_description(version)
+        self.assertLessEqual(len(description), 255)
+        self.assertEqual(sync.DESCRIPTION_MAX, 255)
+        # ASCII with nothing Nexus stores HTML-escaped, so the stored length is the sent length.
+        self.assertTrue(description.isascii())
+        self.assertFalse(set(description) & set("<>&\"'"))
+        name = sync.nexus_display_name(version)
+        self.assertLessEqual(len(name), 50)
+        self.assertRegex(name, r"^[a-zA-Z0-9 _'().-]+$")
+
+    def test_a_longer_version_is_refused_before_anything_is_uploaded(self):
+        with self.assertRaisesRegex(ValueError, "longer than"):
+            sync.release_version(self.release("v" + self.LONGEST + "9"))
+
+    def test_description_guard_fails_instead_of_sending_a_long_line(self):
+        with patch.object(sync, "REPOSITORY", "humangenome/" + "x" * 255), \
+                self.assertRaisesRegex(ValueError, "over 255"):
+            sync.nexus_description("0.13.22")
 
 
 if __name__ == "__main__":
