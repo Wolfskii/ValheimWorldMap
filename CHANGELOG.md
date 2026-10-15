@@ -4,8 +4,15 @@ All notable changes to ValheimOne will be documented in this file. This project 
 
 ## [Unreleased]
 
+## [0.13.22] - 2026-10-15
+
+### Fixed
+
+- Changing `Port`, `BindIp` or `TextureSize` in `[LiveMap]` while the server runs now restarts the live map with the new value. The map reads these three only when it starts, so before this the config reload logged the change as applied live while the map stayed on its old port, address and texture until the next server restart. A changed value also retries a map that failed to start, for example on a port another program holds.
+
 ### Changed
 
+- Verified against Valheim 1.0.20 (dedicated-server build 25909431); `SupportedGameVersion` is `1.0.20`, so the startup banner no longer warns on the current game. All 484 static references and 51 reflection targets resolve, the Harmony patch contract is unchanged at 31 modules and 75 patched methods, and the worldgen fingerprint is unchanged. The four game methods 1.0.20 changed that ValheimOne patches (creature drop lists, crafting, the player join message and the console's command setup) were read against their patches: the crafting patch only waits for chest access and then runs the game's own crafting, so 1.0.20's upgrade fix applies.
 - Nexus Mods now carries only the plugin-only download. The Full download, with BepInEx included, is on the GitHub release page.
 
 ## [0.13.21] - 2026-10-13

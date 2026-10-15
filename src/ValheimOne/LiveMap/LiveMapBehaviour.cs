@@ -55,6 +55,10 @@ internal sealed class LiveMapBehaviour : MonoBehaviour
     private bool _started;
     private bool _startFailed;
     private bool _stopped;
+    private bool _startAttempted;
+    private int _attemptedPort;
+    private string _attemptedBindIp = string.Empty;
+    private int _attemptedTextureSize;
     private volatile bool _idle;
 
     public static LiveMapBehaviour? Instance { get; private set; }
@@ -161,13 +165,29 @@ internal sealed class LiveMapBehaviour : MonoBehaviour
                 StopServices(false);
             }
 
-            // Toggling the section off and on again is the one deliberate way to retry
-            // after a hard start failure.
+            // Toggling the section off and on again retries after a hard start failure;
+            // so does changing Port, BindIp or TextureSize (below).
             _startFailed = false;
             return;
         }
 
         RefreshFogMode();
+
+        // Port, BindIp and TextureSize are read only when the map starts. A live change to any
+        // of them restarts the map's services so the new value really applies (until 0.13.22
+        // the config reload logged "applied live" and the listener stayed where it was).
+        if (_startAttempted && StartSettingsChanged(_config))
+        {
+            if (_started)
+            {
+                _log.Info("[LiveMap] Port, BindIp or TextureSize changed; restarting the map with the new values.");
+                StopServices(false);
+            }
+
+            _startFailed = false;
+            _startAttempted = false;
+            return;
+        }
 
         if (!_started)
         {
@@ -221,6 +241,11 @@ internal sealed class LiveMapBehaviour : MonoBehaviour
         }
     }
 
+    private bool StartSettingsChanged(LiveMapConfig config) =>
+        config.Port != _attemptedPort ||
+        config.TextureSize != _attemptedTextureSize ||
+        !string.Equals(config.BindIp ?? string.Empty, _attemptedBindIp, StringComparison.Ordinal);
+
     private void TryStart()
     {
         LiveMapConfig? config = _config;
@@ -229,6 +254,11 @@ internal sealed class LiveMapBehaviour : MonoBehaviour
         {
             return;
         }
+
+        _startAttempted = true;
+        _attemptedPort = config.Port;
+        _attemptedBindIp = config.BindIp ?? string.Empty;
+        _attemptedTextureSize = config.TextureSize;
 
         ZNet? network = ZNet.instance;
         WorldGenerator? generator = WorldGenerator.instance;

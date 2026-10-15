@@ -20,7 +20,7 @@ Keep the server and every PC on the same minor version, 0.13.x with 0.13.x.
 
 The whole world in a browser, drawn from the server seed and updated in real time. Players, ships, carts, portals, tombstones, wards and beds move as they happen. Fog of war follows recorded player trails and exploration shared through cartography tables. A heatmap, a world timelapse and a playtime, deaths and distance leaderboard are included.
 
-![Live map, admin view](https://github.com/HumanGenome/ValheimOne/raw/main/docs/screenshots/thunderstore/live-map-20261013.png)
+![Live map, admin view](https://github.com/HumanGenome/ValheimOne/raw/main/docs/screenshots/thunderstore/live-map-20261015.png)
 
 ### Three views
 
@@ -78,7 +78,7 @@ The server needs [BepInExPack_Valheim](https://thunderstore.io/c/valheim/p/denik
 
 ## Compatibility
 
-Tested on the Valheim 1.0.17 dedicated server with BepInExPack_Valheim 5.4.2351. After a Valheim patch, check the changelog before you update.
+Tested on the Valheim 1.0.20 dedicated server with BepInExPack_Valheim 5.4.2351. After a Valheim patch, check the changelog before you update.
 
 ## Remove it
 

@@ -3,9 +3,9 @@
 </p>
 
 <p align="center">
-  <b>Everything your Valheim dedicated server is missing.</b><br>
-  A live world map you can hand to your players, a searchable item codex, a browser admin console,<br>
-  Discord alerts and optional gameplay rules. The map and admin tools work with vanilla clients.
+  <b>A live web map and browser admin console for Valheim dedicated servers.</b><br>
+  Share the map with your players, search every item and recipe, get Discord alerts and turn on optional gameplay rules for your world.<br>
+  The map and admin tools work with vanilla clients.
 </p>
 
 <p align="center">
@@ -36,7 +36,7 @@
 
 Your whole world in a browser, drawn from the server seed and updating in real time. Players, ships, carts, portals, tombstones, wards and beds move as they happen. Fog-of-war follows recorded player trails and exploration shared through cartography tables.
 
-![ValheimOne Live Map, admin view](docs/screenshots/valheimone-live-map-20260909-r3.png)
+![ValheimOne Live Map, admin view](docs/screenshots/live-map-20261015.png)
 
 Turn on the heatmap to see where everyone has been over the last day or week, open World Timelapse to scrub through explored fog, base growth and aggregate movement history, or view the Sagas leaderboard for playtime, deaths and distance travelled.
 
@@ -52,7 +52,7 @@ Three views, and you decide who gets which. **Admin** sees everything. **Shared*
 
 ### 🏛️ Look Inside Dungeons
 
-Click any dungeon entrance and get a top-down room schematic read straight from the game's own generated layout, with live players drawn inside it. No more wondering where someone vanished to.
+Click any dungeon entrance and get a top-down room schematic read straight from the game's own generated layout, with live players drawn inside it.
 
 ![ValheimOne dungeon interior viewer](docs/screenshots/dungeon-interior.png)
 

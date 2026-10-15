@@ -69,6 +69,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
             TestWeatherDamage();
             TestFoodDegradation();
             TestRegionLabels();
+            TestMapStartSettings();
             string result = $"RUNTIME REGRESSION PASS assertions={_assertions} game={(global::Version.GetVersionString())}";
             Logger.LogInfo(result);
             File.WriteAllText(Path.Combine(_root, "result.txt"), result + "\n");
@@ -791,6 +792,46 @@ public sealed class RuntimeRegression : BaseUnityPlugin
         AccessTools.Field(target as Type ?? target.GetType(), name).SetValue(target is Type ? null : target, value);
     private static void SetProperty(object target, string name, object value) =>
         AccessTools.Property(target.GetType(), name).SetValue(target, value, null);
+    // The live map reads Port, BindIp and TextureSize only when it starts. Its Update must see a
+    // change to any of them against the values of the last start so it can restart (0.13.22).
+    private void TestMapStartSettings()
+    {
+        Type behaviourType = typeof(ValheimOnePlugin).Assembly.GetType("ValheimOne.LiveMap.LiveMapBehaviour", true)!;
+        object? behaviour = AccessTools.Property(behaviourType, "Instance").GetValue(null, null);
+        Check(behaviour != null, "live map behaviour exists");
+        object config = AccessTools.Field(behaviourType, "_config").GetValue(behaviour)!;
+        MethodInfo changed = AccessTools.Method(behaviourType, "StartSettingsChanged");
+        FieldInfo port = AccessTools.Field(behaviourType, "_attemptedPort");
+        FieldInfo bindIp = AccessTools.Field(behaviourType, "_attemptedBindIp");
+        FieldInfo textureSize = AccessTools.Field(behaviourType, "_attemptedTextureSize");
+        object? oldPort = port.GetValue(behaviour), oldBindIp = bindIp.GetValue(behaviour), oldTexture = textureSize.GetValue(behaviour);
+        int currentPort = (int)ReadMember(config, "Port")!;
+        string currentBindIp = (string?)ReadMember(config, "BindIp") ?? "";
+        int currentTexture = (int)ReadMember(config, "TextureSize")!;
+        bool Changed() => (bool)changed.Invoke(behaviour, new[] { config })!;
+        try
+        {
+            port.SetValue(behaviour, currentPort);
+            bindIp.SetValue(behaviour, currentBindIp);
+            textureSize.SetValue(behaviour, currentTexture);
+            Check(!Changed(), "map start settings unchanged when they match the last start");
+            port.SetValue(behaviour, currentPort + 1);
+            Check(Changed(), "map sees a changed Port");
+            port.SetValue(behaviour, currentPort);
+            bindIp.SetValue(behaviour, currentBindIp + "x");
+            Check(Changed(), "map sees a changed BindIp");
+            bindIp.SetValue(behaviour, currentBindIp);
+            textureSize.SetValue(behaviour, currentTexture * 2);
+            Check(Changed(), "map sees a changed TextureSize");
+        }
+        finally
+        {
+            port.SetValue(behaviour, oldPort);
+            bindIp.SetValue(behaviour, oldBindIp);
+            textureSize.SetValue(behaviour, oldTexture);
+        }
+    }
+
     private void TestRegionLabels()
     {
         Type catalog = AccessTools.TypeByName("ValheimOne.LiveMap.BiomeRegionCatalog");
