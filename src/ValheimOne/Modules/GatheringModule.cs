@@ -31,9 +31,13 @@ public sealed class GatheringModule : IFeatureModule
             "Chance of supported materials dropping from non-guaranteed drop tables, capped at 100 percent.");
 
         // ObjectDB identifies item prefabs by their GameObject name, which follows the .prefab
-        // filename in Valheim's 0.221.12 SoftRef manifest. Most config keys match that identifier;
-        // the deliberate mappings are CoreWood -> RoundLog, Feather -> Feathers, and the current
-        // FlametalOre resource -> FlametalOreNew. The legacy FlametalOre prefab remains an alias.
+        // filename in Valheim's SoftRef manifest. Most config keys match that identifier; the
+        // deliberate mappings are CoreWood -> RoundLog, Feather -> Feathers, the current
+        // FlametalOre resource -> FlametalOreNew (the legacy FlametalOre prefab remains an alias),
+        // and the Valheim 1.0 Deep North materials, keyed by their in-game names:
+        // Timberwood -> Frostwood, PetrifiedTissue -> GoldOre. Checked against the 1.0.20
+        // drop tables: Frostwood falls from Deep North fir logs and roots, Ice from ice shards,
+        // ice ponds and frozen remains, GoldOre from frozen trolls and gold veins.
         RegisterMaterial("Wood", "Wood");
         RegisterMaterial("FineWood", "FineWood");
         RegisterMaterial("CoreWood", "RoundLog");
@@ -55,6 +59,9 @@ public sealed class GatheringModule : IFeatureModule
         _materialModifiers.Add("FlametalOre", flametalOre);
 
         RegisterMaterial("ProustitePowder", "ProustitePowder");
+        RegisterMaterial("Timberwood", "Frostwood");
+        RegisterMaterial("Ice", "Ice");
+        RegisterMaterial("PetrifiedTissue", "GoldOre");
     }
 
     public string Name => "Gathering";

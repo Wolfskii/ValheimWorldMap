@@ -4,6 +4,21 @@ All notable changes to ValheimOne will be documented in this file. This project 
 
 ## [Unreleased]
 
+## [0.13.23] - 2026-10-16
+
+### Added
+
+- The live map's place layers know Valheim 1.0's places. New dungeon layers for Bear Caves (Black Forest), Mörkhalla and the Winding Tunnels (Deep North), each with the View Interior viewer; a Deep North Villages layer for the frozen villages, their huts and the lumber camps; a Forge of Potential layer for the Mountain upgrade stations. Frozen ships join Shipwrecks, the Deep North memorial altars join Runestones & Lore, and the Fuling huts join Enemy Camps. Before this a place with no rule was dropped from the map, so none of these showed. The rules come from the location list of Valheim 1.0.20, and the marker names are the game's own words (Mörkhalla, Winding Tunnels, Bear Cave, Aesir Passage, Forge of Potential).
+- `[Gathering]` covers the Deep North materials: `Timberwood` (prefab `Frostwood`, from Deep North fir logs and roots), `Ice` (ice shards, ice ponds, frozen remains) and `PetrifiedTissue` (prefab `GoldOre`, from frozen trolls and gold veins).
+- `[ProductionSpeeds]` covers the frigid kiln (`piece_FrostKiln`), which burns ice into liquid frost: `FrigidKilnProductionSeconds`, `FrigidKilnMaxFuel` and `FrigidKilnFuelPerProduct`. It takes no ore, so it has no queue setting. The frost foundry is a cooking station, so `[CookingStation]` already covers it.
+- `[ContainerSizes]` covers the Grausten chest (`GraustenChestColumns`/`GraustenChestRows`, 8x5 in the game) and the wardrobe (`WardrobeColumns`/`WardrobeRows`, 5x10). Like every Synced setting, a changed size needs ValheimOne 0.13.23 on each player's PC as well.
+
+### Changed
+
+- Swamp, Plains and Black Forest are drawn in the game's own map colors (Valheim 1.0.20's minimap color table), and Mistlands in the color of the game's map mist. Swamps were a gray brown that read as the gray Mistlands; they are now the game's red brown, and the Mistlands its mauve. Plains are the game's orange tan rather than straw yellow, and the Black Forest the game's olive green rather than dark gray green. Meadows, Ashlands, Mountain, Deep North and the ocean are unchanged. The renderer cache version is now 6, so each map draws once more at its next start.
+- Place names on the live map leave out the `_DN` suffix of Deep North prefabs, so `FrozenShip01_DN` reads Frozen Ship and `ShipWreck01_DN` reads Ship Wreck.
+- The README live-map screenshot is retaken on 0.13.23 with the new colors.
+
 ## [0.13.22] - 2026-10-15
 
 ### Fixed

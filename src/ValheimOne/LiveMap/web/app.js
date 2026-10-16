@@ -383,7 +383,10 @@
                 "dungeon_trollcave",
                 "dungeon_frostcave",
                 "dungeon_mine",
-                "dungeon_ashlands"
+                "dungeon_ashlands",
+                "dungeon_bearcave",
+                "dungeon_morkhalla",
+                "dungeon_windingtunnels"
             ]
         },
         {
@@ -438,6 +441,8 @@
                 "structure_shipwreck",
                 "structure_ruins",
                 "structure_mistlands",
+                "structure_deepnorth",
+                "structure_forge",
                 "structure_runestone",
                 "misc"
             ]
@@ -464,6 +469,15 @@
             label: "Infested Mines", glyph: "⛏", category: "dungeons", dungeonEntrance: true
         },
         dungeon_ashlands: { label: "Ashlands Ruins", glyph: "♨", category: "dungeons" },
+        dungeon_bearcave: {
+            label: "Bear Caves", glyph: "◓", category: "dungeons", dungeonEntrance: true
+        },
+        dungeon_morkhalla: {
+            label: "Mörkhalla", glyph: "⌂", category: "dungeons", dungeonEntrance: true
+        },
+        dungeon_windingtunnels: {
+            label: "Winding Tunnels", glyph: "∿", category: "dungeons", dungeonEntrance: true
+        },
         spawner_greydwarf: {
             label: "Greydwarf Nests", glyph: "♣", category: "spawners", resource: true
         },
@@ -519,6 +533,8 @@
         structure_shipwreck: { label: "Shipwrecks", glyph: "⚓", category: "structures" },
         structure_ruins: { label: "Ruins & Villages", glyph: "▥", category: "structures" },
         structure_mistlands: { label: "Mistlands Remains", glyph: "†", category: "structures" },
+        structure_deepnorth: { label: "Deep North Villages", glyph: "❅", category: "structures" },
+        structure_forge: { label: "Forge of Potential", glyph: "⚒", category: "structures" },
         structure_runestone: { label: "Runestones & Lore", glyph: "ᚱ", category: "structures" },
         misc: { label: "Misc", glyph: "◇", category: "structures" },
         ghosts: { label: "Last seen", glyph: "♙", category: "live", dynamic: true }
@@ -628,6 +644,9 @@
         dungeon_frostcave: false,
         dungeon_mine: false,
         dungeon_ashlands: false,
+        dungeon_bearcave: false,
+        dungeon_morkhalla: false,
+        dungeon_windingtunnels: false,
         spawner_greydwarf: false,
         spawner_bonepile: false,
         spawner_draugrpile: false,
@@ -654,6 +673,8 @@
         structure_shipwreck: false,
         structure_ruins: false,
         structure_mistlands: false,
+        structure_deepnorth: false,
+        structure_forge: false,
         structure_runestone: false,
         misc: false,
         fog: true,
@@ -12636,13 +12657,33 @@
             POI_GROUPS[group].dungeonEntrance === true;
     }
 
+    // Places the game names in its own words (location prefab -> English text).
+    var POI_PLACE_NAMES = {
+        ancientupgradestation: "Forge of Potential",
+        bearcave: "Bear Cave",
+        dnbossroom: "Aesir Passage",
+        dnhut01: "Deep North Hut",
+        lumbercamp: "Lumber Camp",
+        morkborg: "Mörkhalla",
+        northmemorialplace: "Ancient Altar",
+        northvillage: "Deep North Village",
+        thedarkesthole: "Winding Tunnels",
+        thehole01: "Winding Tunnels"
+    };
+
     function prettifyPoiName(name) {
         var pretty = typeof name === "string" ? name.trim() : "";
         if (!pretty) {
             return "Point of interest";
         }
 
+        var placeKey = pretty.replace(/[^a-z0-9]/gi, "").toLowerCase();
+        if (Object.prototype.hasOwnProperty.call(POI_PLACE_NAMES, placeKey)) {
+            return POI_PLACE_NAMES[placeKey];
+        }
+
         pretty = pretty.replace(/[_-]+/g, " ");
+        pretty = pretty.replace(/\s+DN$/i, "");
         pretty = pretty.replace(
             /^(?:Meadows|Black\s*Forest|Swamp|Mountain|Plains|Mistlands|Ashlands|Deep\s*North|Ocean)\s+/i,
             ""

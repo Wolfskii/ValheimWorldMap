@@ -22,11 +22,11 @@ Each module has a mode, explained at the bottom of this page. **Server-authorita
 - `ExperienceRates` (`[Experience]`): applies global and per-skill experience multipliers. **Mode:** synced.
 - `DeathPenalty` (`[DeathPenalty]`): scales death skill loss or preserves inventory without a tombstone. **Mode:** synced.
 - `MapSharing` (`[MapSharing]`): forces compatible clients to share positions and synchronizes their combined explored-map area. **Mode:** synced.
-- `ProductionSpeeds` (`[ProductionSpeeds]`): overrides production time, queue size, and fuel capacity across smelters, blast furnaces, kilns, windmills, spinning wheels, and eitr refineries. **Mode:** synced.
+- `ProductionSpeeds` (`[ProductionSpeeds]`): overrides production time, queue size, and fuel capacity across smelters, blast furnaces, kilns, windmills, spinning wheels, eitr refineries, and frigid kilns. **Mode:** synced.
 - `CookingStation` (`[CookingStation]`): scales cook speed, optionally bypasses the fire requirement, and auto-feeds fuel and raw food from nearby containers. **Mode:** synced.
 - `FireSource` (`[FireSource]`): makes torches and fires infinite. **Mode:** synced.
 - `StructuralIntegrity` (`[StructuralIntegrity]`): disables weather damage and reduces support loss by material. **Mode:** synced.
-- `ContainerSizes` (`[ContainerSizes]`): overrides chest, cart, karve, and longship grid sizes with an item-safe shrink guard. **Mode:** synced.
+- `ContainerSizes` (`[ContainerSizes]`): overrides chest (wood, personal, reinforced, black metal, Grausten), wardrobe, cart, karve, and longship grid sizes with an item-safe shrink guard. **Mode:** synced.
 - `Tames` (`[Tames]`): applies taming, growth, and procreation rate modifiers. **Mode:** synced.
 - `WorldEvents` (`[Events]`): controls raid chance and interval, disables raids, and overrides guardian-power duration and cooldown. **Mode:** server-authoritative.
 - `Trader` (`[Trader]`): multiplies trader buy prices. **Mode:** synced.

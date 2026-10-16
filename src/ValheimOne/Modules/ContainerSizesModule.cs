@@ -24,6 +24,8 @@ public sealed class ContainerSizesModule : IFeatureModule
     private readonly ContainerSettings _personalChest;
     private readonly ContainerSettings _reinforcedChest;
     private readonly ContainerSettings _blackmetalChest;
+    private readonly ContainerSettings _graustenChest;
+    private readonly ContainerSettings _wardrobe;
     private readonly ContainerSettings _cart;
     private readonly ContainerSettings _karve;
     private readonly ContainerSettings _longship;
@@ -39,6 +41,11 @@ public sealed class ContainerSizesModule : IFeatureModule
         _personalChest = AddSettings("PersonalChest");
         _reinforcedChest = AddSettings("ReinforcedChest");
         _blackmetalChest = AddSettings("BlackmetalChest");
+
+        // Valheim 1.0 Deep North storage (vanilla grids in 1.0.20: Grausten chest 8x5,
+        // wardrobe 5x10).
+        _graustenChest = AddSettings("GraustenChest");
+        _wardrobe = AddSettings("Wardrobe");
         _cart = AddSettings("Cart");
         _karve = AddSettings("Karve");
         _longship = AddSettings("Longship");
@@ -237,6 +244,12 @@ public sealed class ContainerSizesModule : IFeatureModule
                 return true;
             case "piece_chest_blackmetal":
                 settings = _blackmetalChest;
+                return true;
+            case "piece_chest_grausten":
+                settings = _graustenChest;
+                return true;
+            case "piece_chest_warderobe":
+                settings = _wardrobe;
                 return true;
             case "cart":
                 settings = _cart;

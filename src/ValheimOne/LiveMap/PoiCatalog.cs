@@ -184,6 +184,11 @@ internal static class PoiClassifier
             "BogWitch_Camp"),
         new PoiRule("trader", MatchKind.StartsWith, "Vendor", "Hildir", "BogWitch"),
         new PoiRule("dungeon_sunkencrypt", MatchKind.StartsWith, "SunkenCrypt"),
+        // Valheim 1.0 dungeons, by the location prefab names in the 1.0.20 location list:
+        // Bear Cave (Black Forest), Morkhalla and the Winding Tunnels (Deep North).
+        new PoiRule("dungeon_bearcave", MatchKind.StartsWith, "BearCave"),
+        new PoiRule("dungeon_morkhalla", MatchKind.StartsWith, "MorkBorg"),
+        new PoiRule("dungeon_windingtunnels", MatchKind.StartsWith, "TheHole", "TheDarkestHole"),
         new PoiRule("dungeon_trollcave", MatchKind.StartsWith, "TrollCave"),
         new PoiRule("dungeon_frostcave", MatchKind.StartsWith, "MountainCave"),
         new PoiRule(
@@ -205,10 +210,17 @@ internal static class PoiClassifier
         new PoiRule("spawner_firehole", MatchKind.Exact, "FireHole"),
         new PoiRule("spawner_charred", MatchKind.Exact, "CharredStone_Spawner"),
         new PoiRule("spawner_other", MatchKind.Contains, "Spawner"),
-        new PoiRule("structure_camp", MatchKind.StartsWith, "GoblinCamp"),
+        new PoiRule("structure_camp", MatchKind.StartsWith, "GoblinCamp", "GoblinHut"),
         new PoiRule("structure_camp", MatchKind.Contains, "DraugrVillage"),
         new PoiRule("structure_tarpit", MatchKind.StartsWith, "TarPit"),
-        new PoiRule("structure_shipwreck", MatchKind.StartsWith, "ShipWreck"),
+        new PoiRule("structure_shipwreck", MatchKind.StartsWith, "ShipWreck", "FrozenShip"),
+        new PoiRule(
+            "structure_deepnorth",
+            MatchKind.StartsWith,
+            "NorthVillage",
+            "DN_hut",
+            "LumberCamp"),
+        new PoiRule("structure_forge", MatchKind.Exact, "AncientUpgradeStation"),
         new PoiRule(
             "structure_ruins",
             MatchKind.StartsWith,
@@ -231,7 +243,7 @@ internal static class PoiClassifier
             "Mistlands_Giant",
             "Mistlands_Statue",
             "Mistlands_Swords"),
-        new PoiRule("structure_runestone", MatchKind.StartsWith, "Runestone"),
+        new PoiRule("structure_runestone", MatchKind.StartsWith, "Runestone", "NorthMemorialPlace"),
         new PoiRule("structure_runestone", MatchKind.Contains, "StoneCircle", "Dolmen"),
     };
 
@@ -361,6 +373,9 @@ internal static class PoiGroups
         new PoiGroupDefinition("dungeon_frostcave", "Frost Caves", "dungeons", false),
         new PoiGroupDefinition("dungeon_mine", "Infested Mines", "dungeons", false),
         new PoiGroupDefinition("dungeon_ashlands", "Ashlands Ruins", "dungeons", false),
+        new PoiGroupDefinition("dungeon_bearcave", "Bear Caves", "dungeons", false),
+        new PoiGroupDefinition("dungeon_morkhalla", "M\u00f6rkhalla", "dungeons", false),
+        new PoiGroupDefinition("dungeon_windingtunnels", "Winding Tunnels", "dungeons", false),
         new PoiGroupDefinition("spawner_greydwarf", "Greydwarf Nests", "spawners", true),
         new PoiGroupDefinition("spawner_bonepile", "Skeleton Spawners", "spawners", true),
         new PoiGroupDefinition("spawner_draugrpile", "Draugr Spawners", "spawners", true),
@@ -386,6 +401,8 @@ internal static class PoiGroups
         new PoiGroupDefinition("structure_shipwreck", "Shipwrecks", "structures", false),
         new PoiGroupDefinition("structure_ruins", "Ruins & Villages", "structures", false),
         new PoiGroupDefinition("structure_mistlands", "Mistlands Remains", "structures", false),
+        new PoiGroupDefinition("structure_deepnorth", "Deep North Villages", "structures", false),
+        new PoiGroupDefinition("structure_forge", "Forge of Potential", "structures", false),
         new PoiGroupDefinition("structure_runestone", "Runestones & Lore", "structures", false),
         new PoiGroupDefinition("bases", "Bases", "structures", false),
         new PoiGroupDefinition("misc", "Misc", "structures", false),

@@ -55,14 +55,20 @@ internal readonly struct MapColor
 
 internal static class BiomePalette
 {
-    // Tints matched to the composed in-game map look; the biome switch mirrors the
-    // game's own minimap biome-to-color mapping.
+    // The biome switch mirrors the game's own minimap biome-to-color mapping
+    // (Minimap.GetPixelColor). Black Forest, Swamp and Plains are the game's own map
+    // colors in Valheim 1.0.20 (the Minimap's serialized m_blackforestColor,
+    // m_swampColor and m_heathColor); Meadows is the game's m_meadowsColor with a
+    // slightly bluer tint. Mistlands is the daylight color of the game's map mist,
+    // which covers the forested Mistlands (the open ground under it is a dark gray,
+    // MapShading.MistlandsSpeck). Ashlands keeps its own red; the lava glow and the
+    // white Mountain and Deep North ramps are this renderer's.
     private static readonly MapColor Meadows = new MapColor(0.573f, 0.664f, 0.404f);
-    private static readonly MapColor BlackForest = new MapColor(0.276f, 0.323f, 0.261f);
-    private static readonly MapColor Swamp = new MapColor(0.442f, 0.398f, 0.328f);
-    private static readonly MapColor Plains = new MapColor(0.784f, 0.702f, 0.463f);
+    private static readonly MapColor BlackForest = new MapColor(0.420f, 0.455f, 0.247f);
+    private static readonly MapColor Swamp = new MapColor(0.639f, 0.447f, 0.345f);
+    private static readonly MapColor Plains = new MapColor(0.906f, 0.671f, 0.470f);
     private static readonly MapColor Ashlands = new MapColor(0.602f, 0.208f, 0.163f);
-    private static readonly MapColor Mistlands = new MapColor(0.482f, 0.475f, 0.500f);
+    private static readonly MapColor Mistlands = new MapColor(0.481f, 0.397f, 0.463f);
     private static readonly MapColor MountainLow = new MapColor(0.72f, 0.76f, 0.78f);
     private static readonly MapColor MountainHigh = new MapColor(0.97f, 0.97f, 0.98f);
     private static readonly MapColor DeepNorthLow = new MapColor(0.82f, 0.85f, 0.88f);

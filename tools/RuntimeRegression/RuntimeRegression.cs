@@ -10,6 +10,7 @@ using HarmonyLib;
 using UnityEngine;
 using ValheimOne.Configuration;
 using ValheimOne.Infrastructure;
+using ValheimOne.LiveMap;
 using ValheimOne.Modules;
 using ValheimOne.Networking;
 
@@ -70,6 +71,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
             TestFoodDegradation();
             TestRegionLabels();
             TestMapStartSettings();
+            TestValheimOneZeroData();
             string result = $"RUNTIME REGRESSION PASS assertions={_assertions} game={(global::Version.GetVersionString())}";
             Logger.LogInfo(result);
             File.WriteAllText(Path.Combine(_root, "result.txt"), result + "\n");
@@ -868,6 +870,126 @@ public sealed class RuntimeRegression : BaseUnityPlugin
             "fixture world region list respects the per-biome and total limits");
         Check(counts.ContainsKey("swamp") && counts.ContainsKey("mountain"),
             "fixture world names its swamps and mountains");
+    }
+
+    // Valheim 1.0 content the map and modules must know by name (checked on Valheim 1.0.20).
+    private void TestValheimOneZeroData()
+    {
+        var known = new HashSet<string>(
+            ZoneSystem.instance.m_locations.Where(l => l != null).Select(l => l.m_prefabName),
+            StringComparer.Ordinal);
+        (string Name, string Group)[] places =
+        {
+            ("MorkBorg", "dungeon_morkhalla"),
+            ("TheHole01", "dungeon_windingtunnels"),
+            ("BearCave", "dungeon_bearcave"),
+            ("NorthVillage", "structure_deepnorth"),
+            ("DN_hut01", "structure_deepnorth"),
+            ("LumberCamp", "structure_deepnorth"),
+            ("FrozenShip01_DN", "structure_shipwreck"),
+            ("FrozenShip03_DN", "structure_shipwreck"),
+            ("NorthMemorialPlace", "structure_runestone"),
+            ("GoblinHut02", "structure_camp"),
+            ("AncientUpgradeStation", "structure_forge"),
+            ("DN_Bossroom", "boss"),
+        };
+        foreach (var (name, group) in places)
+        {
+            Check(known.Contains(name), "Valheim 1.0 location exists in this build: " + name);
+            Check(PoiClassifier.Classify(name, false, false) == group, name + " is served on " + group);
+            Check(PoiGroups.TryGet(group, out _), group + " is a defined map layer");
+        }
+
+        string[] dungeons = { "dungeon_bearcave", "dungeon_morkhalla", "dungeon_windingtunnels" };
+        string[] labels = { "Bear Cave", "M\u00f6rkhalla", "Winding Tunnels" };
+        for (int i = 0; i < dungeons.Length; i++)
+            Check((string)Call(typeof(DungeonRegistry), "GetTypeLabel", dungeons[i], "")! == labels[i],
+                "dungeon viewer names " + dungeons[i] + " " + labels[i]);
+
+        // The game's own map colours: swamp is a warm brown, Mistlands a cool mauve.
+        MapColor swamp = BiomePalette.Get(Heightmap.Biome.Swamp, 40f);
+        MapColor mist = BiomePalette.Get(Heightmap.Biome.Mistlands, 40f);
+        Check(swamp.Red > swamp.Green && swamp.Green > swamp.Blue, "swamp is drawn red-brown like the game's map");
+        Check(mist.Blue > mist.Green && mist.Red > mist.Green, "Mistlands is drawn mauve like the game's map mist");
+
+        // Gathering covers the Deep North wood, ice and ore.
+        var gatherSettings = new ValheimOneConfig(Path.Combine(_root, "gathering-overlay.cfg"));
+        var gathering = new GatheringModule(gatherSettings.Features);
+        Check(gatherSettings.ApplyOverlay(
+            "[Gathering] / Enabled=true\n[Gathering] / Timberwood=100\n" +
+            "[Gathering] / Ice=100\n[Gathering] / PetrifiedTissue=100\n") == 4,
+            "the Deep North gathering settings arrive through the synced overlay");
+        var drops = new List<GameObject>();
+        foreach (string item in new[] { "Frostwood", "Ice", "GoldOre", "Wood" })
+        {
+            GameObject prefab = ObjectDB.instance.GetItemPrefab(item);
+            Check(prefab != null, "native material exists: " + item);
+            drops.Add(prefab!);
+        }
+        AccessTools.Method(typeof(GatheringModule), "ScaleMaterialCounts", new[] { typeof(List<GameObject>) })
+            .Invoke(gathering, new object[] { drops });
+        Check(drops.Count(d => d.name == "Frostwood") == 2 && drops.Count(d => d.name == "Ice") == 2 &&
+            drops.Count(d => d.name == "GoldOre") == 2 && drops.Count(d => d.name == "Wood") == 1,
+            "Timberwood, Ice and Petrified Tissue drop counts follow their own settings");
+
+        // The Frigid Kiln makes Liquid Frost from Ice and takes no ore.
+        var productionSettings = new ValheimOneConfig(Path.Combine(_root, "frigid-overlay.cfg"));
+        var production = new ProductionSpeedsModule(productionSettings.Features, new ModLogger(Logger));
+        object? previousProduction = Get(typeof(ProductionSpeedsModule), "_active");
+        try
+        {
+            Set(typeof(ProductionSpeedsModule), "_active", production);
+            Smelter kiln = NewStation("piece_FrostKiln", new Vector3(820, 600, 700)).GetComponent<Smelter>();
+            Check(kiln.m_conversion.Any(c => c.m_from == null && c.m_to != null && c.m_to.name == "FrozenFuel") &&
+                kiln.m_fuelItem != null && kiln.m_fuelItem.name == "Ice" && kiln.m_maxOre == 0,
+                "the frigid kiln burns ice into liquid frost without ore");
+            float seconds = kiln.m_secPerProduct;
+            int fuel = kiln.m_maxFuel;
+            int perProduct = kiln.m_fuelPerProduct;
+            Check(productionSettings.ApplyOverlay(
+                "[ProductionSpeeds] / Enabled=true\n[ProductionSpeeds] / FrigidKilnProductionSeconds=7\n" +
+                "[ProductionSpeeds] / FrigidKilnMaxFuel=9\n[ProductionSpeeds] / FrigidKilnFuelPerProduct=2\n") == 4,
+                "the frigid kiln settings arrive through the synced overlay");
+            Check(kiln.m_secPerProduct == 7 && kiln.m_maxFuel == 9 && kiln.m_fuelPerProduct == 2 && kiln.m_maxOre == 0,
+                "live frigid kiln settings apply and leave it ore-free");
+            productionSettings.ClearOverlay();
+            Check(kiln.m_secPerProduct == seconds && kiln.m_maxFuel == fuel && kiln.m_fuelPerProduct == perProduct,
+                "disabling production overrides restores the frigid kiln");
+        }
+        finally { Set(typeof(ProductionSpeedsModule), "_active", previousProduction); }
+
+        // Deep North storage: Grausten chest and wardrobe.
+        var containerSettings = new ValheimOneConfig(Path.Combine(_root, "containers-overlay.cfg"));
+        var containers = new ContainerSizesModule(containerSettings.Features, new ModLogger(Logger));
+        object? previousContainers = Get(typeof(ContainerSizesModule), "_active");
+        try
+        {
+            Set(typeof(ContainerSizesModule), "_active", containers);
+            Check(containerSettings.ApplyOverlay(
+                "[ContainerSizes] / Enabled=true\n" +
+                "[ContainerSizes] / GraustenChestColumns=6\n[ContainerSizes] / GraustenChestRows=7\n" +
+                "[ContainerSizes] / WardrobeColumns=4\n[ContainerSizes] / WardrobeRows=12\n") == 5,
+                "the Deep North storage settings arrive through the synced overlay");
+            (string Prefab, int Columns, int Rows, int VanillaColumns, int VanillaRows)[] chests =
+            {
+                ("piece_chest_grausten", 6, 7, 8, 5),
+                ("piece_chest_warderobe", 4, 12, 5, 10),
+            };
+            var built = new List<Container>();
+            for (int i = 0; i < chests.Length; i++)
+            {
+                Container chest = NewStation(chests[i].Prefab, new Vector3(840 + i * 5, 600, 700)).GetComponent<Container>();
+                built.Add(chest);
+                Check(chest.m_width == chests[i].Columns && chest.m_height == chests[i].Rows &&
+                    chest.GetInventory().GetWidth() == chests[i].Columns && chest.GetInventory().GetHeight() == chests[i].Rows,
+                    chests[i].Prefab + " takes its own grid size");
+            }
+            containerSettings.ClearOverlay();
+            for (int i = 0; i < chests.Length; i++)
+                Check(built[i].m_width == chests[i].VanillaColumns && built[i].m_height == chests[i].VanillaRows,
+                    "disabling container sizes restores " + chests[i].Prefab + " to its game grid");
+        }
+        finally { Set(typeof(ContainerSizesModule), "_active", previousContainers); }
     }
 
     private static object? Call(object target, string name, params object[] args) =>

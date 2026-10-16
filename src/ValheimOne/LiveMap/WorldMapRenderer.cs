@@ -15,7 +15,7 @@ internal sealed class WorldMapRenderer
 {
     public const float PixelSize = 12f;
     public const int WorldRadius = 10500;
-    public const int RendererVersion = 5;
+    public const int RendererVersion = 6;
 
     // Deepest zoom served through on-demand detail tiles (about 0.375 m/px for a
     // 2048 base at 12 m/px, providing sub-meter detail).

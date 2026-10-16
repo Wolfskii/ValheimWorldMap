@@ -724,6 +724,12 @@ internal sealed class DungeonRegistry
                 return "Infested Mine";
             case "dungeon_ashlands":
                 return "Ashlands Dungeon";
+            case "dungeon_bearcave":
+                return "Bear Cave";
+            case "dungeon_morkhalla":
+                return "M\u00f6rkhalla";
+            case "dungeon_windingtunnels":
+                return "Winding Tunnels";
             case "dungeon_crypt":
             default:
                 return "Burial Chamber";

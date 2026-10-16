@@ -18,6 +18,7 @@ public sealed class ProductionSpeedsModule : IFeatureModule
     private readonly StationSettings _windmill;
     private readonly StationSettings _spinningWheel;
     private readonly StationSettings _eitrRefinery;
+    private readonly StationSettings _frigidKiln;
     private readonly List<SmelterBaseline> _baselines = new List<SmelterBaseline>();
     private readonly HashSet<string> _loggedUnmatchedPrefabs =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -97,6 +98,24 @@ public sealed class ProductionSpeedsModule : IFeatureModule
                 "EitrRefineryMaxQueue",
                 0,
                 "Absolute maximum sap queued in an eitr refinery. Zero disables this override."));
+
+        // Valheim 1.0's Frigid Kiln (piece_FrostKiln) is a Smelter that burns Ice to make Liquid
+        // Frost (FrozenFuel) and takes no ore, so it has no queue setting: a nonzero ore limit
+        // would make it wait for ore forever.
+        _frigidKiln = new StationSettings(
+            _feature.Int(
+                "FrigidKilnProductionSeconds",
+                0,
+                "Absolute seconds a frigid kiln takes to make one liquid frost. Zero disables this override."),
+            maxQueue: null,
+            _feature.Int(
+                "FrigidKilnMaxFuel",
+                0,
+                "Absolute maximum ice stored by a frigid kiln. Zero disables this override."),
+            _feature.Int(
+                "FrigidKilnFuelPerProduct",
+                0,
+                "Absolute ice consumed per liquid frost made in a frigid kiln. Zero disables this override."));
 
         registry.EffectiveValuesChanged += OnEffectiveValuesChanged;
     }
@@ -200,8 +219,11 @@ public sealed class ProductionSpeedsModule : IFeatureModule
             ? productionSeconds
             : baseline.SecondsPerProduct;
 
-        int maxQueue = settings.MaxQueue.Value;
-        smelter.m_maxOre = maxQueue > 0 ? maxQueue : baseline.MaxOre;
+        if (settings.MaxQueue != null)
+        {
+            int maxQueue = settings.MaxQueue.Value;
+            smelter.m_maxOre = maxQueue > 0 ? maxQueue : baseline.MaxOre;
+        }
 
         if (settings.MaxFuel != null && settings.FuelPerProduct != null)
         {
@@ -253,6 +275,12 @@ public sealed class ProductionSpeedsModule : IFeatureModule
             return true;
         }
 
+        if (string.Equals(prefabName, "piece_FrostKiln", StringComparison.OrdinalIgnoreCase))
+        {
+            settings = _frigidKiln;
+            return true;
+        }
+
         settings = null;
         return false;
     }
@@ -272,7 +300,7 @@ public sealed class ProductionSpeedsModule : IFeatureModule
     {
         public StationSettings(
             ConfigEntryInt productionSeconds,
-            ConfigEntryInt maxQueue,
+            ConfigEntryInt? maxQueue,
             ConfigEntryInt? maxFuel = null,
             ConfigEntryInt? fuelPerProduct = null)
         {
@@ -284,7 +312,7 @@ public sealed class ProductionSpeedsModule : IFeatureModule
 
         public ConfigEntryInt ProductionSeconds { get; }
 
-        public ConfigEntryInt MaxQueue { get; }
+        public ConfigEntryInt? MaxQueue { get; }
 
         public ConfigEntryInt? MaxFuel { get; }
 

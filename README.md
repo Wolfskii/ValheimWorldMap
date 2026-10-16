@@ -36,7 +36,7 @@
 
 Your whole world in a browser, drawn from the server seed and updating in real time. Players, ships, carts, portals, tombstones, wards and beds move as they happen. Fog-of-war follows recorded player trails and exploration shared through cartography tables.
 
-![ValheimOne Live Map, admin view](docs/screenshots/live-map-20261015.png)
+![ValheimOne Live Map, admin view](docs/screenshots/live-map-20261016.png)
 
 Turn on the heatmap to see where everyone has been over the last day or week, open World Timelapse to scrub through explored fog, base growth and aggregate movement history, or view the Sagas leaderboard for playtime, deaths and distance travelled.
 

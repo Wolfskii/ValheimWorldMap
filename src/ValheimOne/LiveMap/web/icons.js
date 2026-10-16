@@ -138,6 +138,21 @@
             '<path d="M3 21h18M5 21V6h14v15M5 9h14M8 9v12m8-12v12"/>' +
             '<path d="m5 6 7-3 7 3M9 21l3-6 3 6M10 18h4"/>'
         ),
+        dungeon_bearcave: svg(
+            '<path d="M3 20c1-7 4.5-11 9-11s8 4 9 11H3Z"/>' +
+            '<path d="M8.5 20c.3-3 1.6-4.5 3.5-4.5s3.2 1.5 3.5 4.5"/>' +
+            '<circle cx="9.2" cy="12.6" r=".8"/><circle cx="12" cy="11.6" r=".8"/>' +
+            '<circle cx="14.8" cy="12.6" r=".8"/>'
+        ),
+        dungeon_morkhalla: svg(
+            '<path d="M3 21v-9l9-6 9 6v9H3Z"/>' +
+            '<path d="M9 21v-4.5a3 3 0 0 1 6 0V21"/>' +
+            '<path d="M12 6 9.5 3M12 6l2.5-3M6 15h1.5m9 0H18"/>'
+        ),
+        dungeon_windingtunnels: svg(
+            '<path d="M12 12a1.5 1.5 0 0 1 3 0 3 3 0 0 1-6 0 4.5 4.5 0 0 1 9 0 6 6 0 0 1-12 0"/>' +
+            '<path d="M4 21h16"/>'
+        ),
         dungeon_ashlands: svg(
             '<path d="M3 21V8h4V5h4v3h4V5h4v8M3 13h16v8H3Z"/>' +
             '<path d="M8 21v-4a4 4 0 0 1 8 0v4M19 21l2-5-2-2"/>' +
@@ -260,6 +275,15 @@
         structure_mistlands: svg(
             '<path d="M3 21C4 10 8 4 12 4s8 6 9 17M7 21c.5-7 2.5-11 5-11s4.5 4 5 11"/>' +
             '<path d="M5 13h4m-5 4h4m7-4h4m-3 4h4M12 4v6"/>'
+        ),
+        structure_deepnorth: svg(
+            '<path d="M3 21v-7l7-5 7 5v7H3Z"/>' +
+            '<path d="M8.5 21v-4h3v4M1.5 14.5 10 8.2l8.5 6.3"/>' +
+            '<path d="M19.5 3v5M17 5.5h5m-4.3-1.8 3.6 3.6m0-3.6-3.6 3.6"/>'
+        ),
+        structure_forge: svg(
+            '<path d="M2 7h14l5-1.5V9c-2.2 0-4 1-5 3H9C6 12 4 10.5 2 9V7Z"/>' +
+            '<path d="M10 12v4m4-4v4M7 20l2-4h6l2 4H7Z"/>'
         ),
         structure_runestone: svg(
             '<path d="M6 21 7 6l5-3 5 3 1 15H6Z"/>' +
