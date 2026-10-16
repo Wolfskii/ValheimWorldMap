@@ -9,8 +9,8 @@ Each module has a mode, explained at the bottom of this page. **Server-authorita
 - `BuildingQoL` (`[Building]`): removes structural-support requirements, suppresses ordinary placement blocking, and overrides build reach and rotation step. **Mode:** synced.
 - `FoodDuration` (`[Food]`): scales food duration and can hold benefits at full strength until expiry. `Enabled = true` and `NoDegradation = true` preserve the full health, stamina and eitr benefits while the food timer still counts down. Each participating player needs ValheimOne; use 0.13.18 or later for the no-degradation fix. **Mode:** synced.
 - `ItemTweaks` (`[Items]`): scales item stack sizes, weights, and maximum durability. **Mode:** synced.
-- `ItemDropMultiplier` (`[Drops]`): scales destructible, creature, and pickable yields. **Mode:** server-authoritative.
-- `Gathering` (`[Gathering]`): applies per-material yield modifiers and adjusts supported non-guaranteed drop chances. **Mode:** server-authoritative.
+- `ItemDropMultiplier` (`[Drops]`): scales destructible, creature, and pickable yields. The game rolls this loot in the game of the player standing near the tree, rock, creature or plant, so a player without ValheimOne gets normal drops. **Mode:** synced.
+- `Gathering` (`[Gathering]`): applies per-material yield modifiers and adjusts supported non-guaranteed drop chances. Like Drops, it is rolled in the game of the player standing nearby, so it needs ValheimOne on that PC. **Mode:** synced.
 - `CraftFromChest` (`[CraftFromChest]`): consumes crafting and optional build costs from nearby accessible containers. **Mode:** synced.
 - `StationAutomation` (`[StationAutomation]`): pulls fuel and processable items from nearby containers for smelter-based stations and fireplaces. **Mode:** synced.
 - `DayNightLength` (`[Time]`): scales or absolutely overrides the full day/night cycle length. **Mode:** synced.
@@ -28,7 +28,7 @@ Each module has a mode, explained at the bottom of this page. **Server-authorita
 - `StructuralIntegrity` (`[StructuralIntegrity]`): disables weather damage and reduces support loss by material. **Mode:** synced.
 - `ContainerSizes` (`[ContainerSizes]`): overrides chest (wood, personal, reinforced, black metal, Grausten), wardrobe, cart, karve, and longship grid sizes with an item-safe shrink guard. **Mode:** synced.
 - `Tames` (`[Tames]`): applies taming, growth, and procreation rate modifiers. **Mode:** synced.
-- `WorldEvents` (`[Events]`): controls raid chance and interval, disables raids, and overrides guardian-power duration and cooldown. **Mode:** server-authoritative.
+- `WorldEvents` (`[Events]`): controls raid chance and interval, disables raids, and overrides guardian-power duration and cooldown. **Mode:** server-authoritative for the raid settings, which work for every player; synced for the guardian-power duration and cooldown, which each player's own game applies, so they only change for players with ValheimOne on their PC.
 - `Trader` (`[Trader]`): multiplies trader buy prices. **Mode:** synced.
 
 **Client-only:** n/a; no current gameplay module uses this mode.

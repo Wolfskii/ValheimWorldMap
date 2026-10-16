@@ -119,9 +119,9 @@ Valheim Dedicated Server/
 
 ### Install on your PC (players)
 
-You can join a ValheimOne server with an unmodded game, on PC or console. The live map, browser console and alerts need nothing on your side. Drops, Gathering and World Events apply to every player as well.
+You can join a ValheimOne server with an unmodded game, on PC or console. The live map, the browser console, the alerts and the raid settings in World Events work with nothing installed on your side.
 
-Every other gameplay module is applied by the player's own game, so it only works on a PC that also has ValheimOne. Consoles cannot install mods.
+The other gameplay modules are applied by the player's own game, so they only work on a PC that also has ValheimOne. That includes Drops, Gathering and the guardian power settings in World Events. The game rolls the loot of a tree, rock or creature in the game of the player standing near it, so a player without ValheimOne gets normal drops. Consoles cannot install mods.
 
 1. Close Valheim. Open the [latest release](https://github.com/HumanGenome/ValheimOne/releases/latest) and download `ValheimOne-full-<version>.zip` under **Assets**. The green Code button gives you the source, not the mod.
 2. In Steam, right click Valheim, then Manage, then Browse local files. Extract the ZIP into that folder so `winhttp.dll` and `BepInEx/` sit next to `valheim.exe`.
