@@ -1,4 +1,4 @@
-version=0.13.23
-golden-sha256=064dce64119058ea68c2c436c1ea1b621c59cf729b5e2f7f3a2ae52d30b6a4c7
-commit=4ef3867
-recorded=2026-10-16T15:57:53Z
+version=0.13.24
+golden-sha256=72d7d80f8b87abbfa3ef8f132e810c20fc76bccdf5fc5070d09e203b95730110
+commit=84a931c
+recorded=2026-10-17T21:42:35Z
