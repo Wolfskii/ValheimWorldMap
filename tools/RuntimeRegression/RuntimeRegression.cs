@@ -72,6 +72,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
             TestRegionLabels();
             TestMapStartSettings();
             TestValheimOneZeroData();
+            TestDropsChestLoot();
             string result = $"RUNTIME REGRESSION PASS assertions={_assertions} game={(global::Version.GetVersionString())}";
             Logger.LogInfo(result);
             File.WriteAllText(Path.Combine(_root, "result.txt"), result + "\n");
@@ -990,6 +991,74 @@ public sealed class RuntimeRegression : BaseUnityPlugin
                     "disabling container sizes restores " + chests[i].Prefab + " to its game grid");
         }
         finally { Set(typeof(ContainerSizesModule), "_active", previousContainers); }
+    }
+
+    // [Drops] DestructibleDrops shared one ItemData between its copies, so a chest filled from the
+    // same DropTable seam stacked the object into itself up to the stack limit and listed it again:
+    // minutes per chest with stack-size mods, and doubled slots in the save (0.13.24). Chest loot
+    // now stays native, and the extras it still scales are separate items.
+    private void TestDropsChestLoot()
+    {
+        var settings = new ValheimOneConfig(Path.Combine(_root, "drops-overlay.cfg"));
+        var module = new ItemDropMultiplierModule(settings.Features);
+        object? previous = Get(typeof(ItemDropMultiplierModule), "_active");
+        try
+        {
+            Set(typeof(ItemDropMultiplierModule), "_active", module);
+            Check(settings.ApplyOverlay("[Drops] / Enabled=true\n[Drops] / DestructibleDrops=400\n") == 2,
+                "destructible drops at 400 percent arrives through the synced overlay");
+
+            string[] prefabs = { "TreasureChest_forestcrypt", "TreasureChest_meadows", "TreasureChest_blackforest", "TreasureChest_mountaincave" };
+            int chests = 0, items = 0;
+            for (int i = 0; i < 24; i++)
+            {
+                string prefab = prefabs[i % prefabs.Length];
+                Container chest = NewStation(prefab, new Vector3(900 + (i % 6) * 4, 600, 700 + (i / 6) * 4)).GetComponent<Container>();
+                List<ItemDrop.ItemData> loot = chest.GetInventory().GetAllItems();
+                var slots = new HashSet<Vector2i>();
+                bool slotsUnique = loot.All(item => slots.Add(item.m_gridPos));
+                Check(loot.Count > 0, prefab + " is filled with Drops on");
+                Check(AllDistinct(loot), prefab + " holds no item object twice");
+                Check(slotsUnique, prefab + " has one item per slot");
+                Check(loot.Count <= chest.m_defaultItems.m_dropMax,
+                    prefab + " keeps its native loot count (" + loot.Count + " of at most " + chest.m_defaultItems.m_dropMax + ")");
+                Check(loot.All(item => item.m_stack >= 1 && item.m_stack <= item.m_shared.m_maxStackSize),
+                    prefab + " stacks stay inside the item's stack limit");
+                chests++;
+                items += loot.Count;
+            }
+            Check(chests == 24 && items >= 24, "24 native loot chests filled with " + items + " items");
+            CheckScaledExtras("after chests were filled");
+            settings.ClearOverlay();
+        }
+        finally { Set(typeof(ItemDropMultiplierModule), "_active", previous); }
+    }
+
+    private void CheckScaledExtras(string when)
+    {
+        GameObject coins = ObjectDB.instance.GetItemPrefab("Coins");
+        var table = new DropTable
+        {
+            m_drops = new List<DropTable.DropData>
+            {
+                new DropTable.DropData { m_item = coins, m_stackMin = 7, m_stackMax = 7, m_weight = 1f, m_dontScale = true },
+            },
+            m_dropMin = 2,
+            m_dropMax = 2,
+            m_dropChance = 1f,
+        };
+        var extras = new List<ItemDrop.ItemData>(table.GetDropListItems());
+        Check(extras.Count == 10, "pickable and fishing extras still scale " + when + " (2 rolls x 5 = " + extras.Count + ")");
+        Check(AllDistinct(extras), "every scaled extra is its own item " + when);
+        Check(extras.All(item => item.m_stack == 7 && item.m_dropPrefab == coins), "scaled extras keep the rolled stack " + when);
+    }
+
+    private static bool AllDistinct(IList<ItemDrop.ItemData> items)
+    {
+        for (int i = 0; i < items.Count; i++)
+            for (int j = i + 1; j < items.Count; j++)
+                if (ReferenceEquals(items[i], items[j])) return false;
+        return true;
     }
 
     private static object? Call(object target, string name, params object[] args) =>

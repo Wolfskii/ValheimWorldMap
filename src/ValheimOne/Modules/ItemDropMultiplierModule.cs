@@ -10,6 +10,12 @@ public sealed class ItemDropMultiplierModule : IFeatureModule
 {
     private static ItemDropMultiplierModule? _active;
 
+    // Container.AddDefaultItems fills a new chest from the same DropTable.GetDropListItems seam that
+    // pickable and fishing extras use. DestructibleDrops covers trees, rocks and resource nodes, never
+    // chest loot, so the postfix stands aside while a chest is being filled.
+    [ThreadStatic]
+    private static int _chestFillDepth;
+
     private readonly FeatureDefinition _feature;
     private readonly ConfigEntryPercent _destructibleDrops;
     private readonly ConfigEntryPercent _creatureLoot;
@@ -68,6 +74,20 @@ public sealed class ItemDropMultiplierModule : IFeatureModule
                 typeof(ItemDropMultiplierModule),
                 nameof(GetDropListItemsPostfix)));
 
+        var addDefaultItems = AccessTools.Method(
+            typeof(Container),
+            "AddDefaultItems",
+            Type.EmptyTypes)
+            ?? throw new MissingMethodException(nameof(Container), "AddDefaultItems");
+        harmony.Patch(
+            addDefaultItems,
+            prefix: new HarmonyMethod(
+                typeof(ItemDropMultiplierModule),
+                nameof(AddDefaultItemsPrefix)),
+            finalizer: new HarmonyMethod(
+                typeof(ItemDropMultiplierModule),
+                nameof(AddDefaultItemsFinalizer)));
+
         var generateDropList = AccessTools.Method(
             typeof(CharacterDrop),
             nameof(CharacterDrop.GenerateDropList),
@@ -117,18 +137,34 @@ public sealed class ItemDropMultiplierModule : IFeatureModule
             return;
         }
 
-        ScaleEntries(__result, active._destructibleDrops);
+        ScaleDropPrefabs(__result, active._destructibleDrops);
     }
 
     private static void GetDropListItemsPostfix(List<ItemDrop.ItemData> __result)
     {
         ItemDropMultiplierModule? active = _active;
-        if (active == null || !active.IsEnabled)
+        if (active == null || !active.IsEnabled || _chestFillDepth > 0)
         {
             return;
         }
 
-        ScaleEntries(__result, active._destructibleDrops);
+        ScaleItems(__result, active._destructibleDrops);
+    }
+
+    private static void AddDefaultItemsPrefix(out bool __state)
+    {
+        _chestFillDepth++;
+        __state = true;
+    }
+
+    private static Exception? AddDefaultItemsFinalizer(bool __state, Exception? __exception)
+    {
+        if (__state)
+        {
+            _chestFillDepth--;
+        }
+
+        return __exception;
     }
 
     private static void GenerateDropListPostfix(
@@ -215,20 +251,56 @@ public sealed class ItemDropMultiplierModule : IFeatureModule
         __result = active._pickableYields.ApplyChance(__result);
     }
 
-    private static void ScaleEntries<T>(List<T> entries, ConfigEntryPercent modifier)
+    private static void ScaleDropPrefabs(List<GameObject> entries, ConfigEntryPercent modifier)
     {
         if (entries == null || entries.Count == 0 || modifier.Value == 0f)
         {
             return;
         }
 
-        var scaledEntries = new List<T>(entries.Count);
-        foreach (T entry in entries)
+        // Each entry is a prefab the game instantiates once per occurrence, so repeating the
+        // same reference is how the vanilla list expresses several drops.
+        var scaledEntries = new List<GameObject>(entries.Count);
+        foreach (GameObject entry in entries)
         {
             int amount = modifier.ApplyChance(1f);
             for (int copy = 0; copy < amount; copy++)
             {
                 scaledEntries.Add(entry);
+            }
+        }
+
+        entries.Clear();
+        entries.AddRange(scaledEntries);
+    }
+
+    private static void ScaleItems(List<ItemDrop.ItemData> entries, ConfigEntryPercent modifier)
+    {
+        if (entries == null || entries.Count == 0 || modifier.Value == 0f)
+        {
+            return;
+        }
+
+        // ItemData is a live item, not a prefab: an inventory that receives the same object twice
+        // stacks it into itself and lists it twice. Every extra copy is therefore its own clone.
+        var scaledEntries = new List<ItemDrop.ItemData>(entries.Count);
+        foreach (ItemDrop.ItemData entry in entries)
+        {
+            int amount = modifier.ApplyChance(1f);
+            if (amount <= 0)
+            {
+                continue;
+            }
+
+            scaledEntries.Add(entry);
+            if (entry == null)
+            {
+                continue;
+            }
+
+            for (int copy = 1; copy < amount; copy++)
+            {
+                scaledEntries.Add(entry.Clone());
             }
         }
 

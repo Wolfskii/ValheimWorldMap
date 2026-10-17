@@ -362,10 +362,11 @@ public sealed class GatheringModule : IFeatureModule
             result.RemoveAll(item => item != null && zeroedItems.Contains(item));
         }
 
-        // [Drops].DestructibleDrops owns an independent postfix on these same seams. If it runs
-        // first, this code scales its expanded result; if it runs second, it duplicates the stacks
-        // already scaled here. Either Harmony order therefore composes the two factors
-        // multiplicatively. Shared ItemData references are adjusted only once for that reason.
+        // [Drops].DestructibleDrops owns an independent postfix on these same seams (it leaves chest
+        // loot alone). If it runs first, this code scales each of its cloned copies; if it runs
+        // second, it clones the stacks already scaled here. Either Harmony order therefore composes
+        // the two factors multiplicatively. A reference is still adjusted only once, so an item
+        // listed twice by another mod is never scaled twice.
     }
 
     private static bool TryGetPrefabName(GameObject prefab, out string prefabName)

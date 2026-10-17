@@ -4,6 +4,12 @@ All notable changes to ValheimOne will be documented in this file. This project 
 
 ## [Unreleased]
 
+## [0.13.24] - 2026-10-17
+
+### Fixed
+
+- `[Drops] DestructibleDrops` no longer touches chest loot. The setting scales drops from trees, rocks and resource nodes, but it also hooked the drop list the game uses to fill a new loot chest, and it repeated the same item object instead of making new ones. When the game put that list in the chest, each repeat stacked the item into itself up to its stack limit and then listed the same object again. With a stack-size mod the stacking ran tens of thousands of times per item: a server built crypts in 50 to 207 seconds instead of under a second, past the game's 30-second timeout, so every player was dropped. The chest also listed one item several times in the same slot. Chests now fill exactly as in the game. Bonus drops from pickables and fishing still scale, and each extra copy is now its own item.
+
 ## [0.13.23] - 2026-10-16
 
 ### Added
