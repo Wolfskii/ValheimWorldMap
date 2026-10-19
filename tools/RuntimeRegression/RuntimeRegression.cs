@@ -4,9 +4,12 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using BepInEx;
+using BepInEx.Bootstrap;
 using HarmonyLib;
+using Steamworks;
 using UnityEngine;
 using ValheimOne.Configuration;
 using ValheimOne.Infrastructure;
@@ -73,6 +76,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
             TestMapStartSettings();
             TestValheimOneZeroData();
             TestDropsChestLoot();
+            TestNetworkSendLimit();
             string result = $"RUNTIME REGRESSION PASS assertions={_assertions} game={(global::Version.GetVersionString())}";
             Logger.LogInfo(result);
             File.WriteAllText(Path.Combine(_root, "result.txt"), result + "\n");
@@ -1059,6 +1063,213 @@ public sealed class RuntimeRegression : BaseUnityPlugin
             for (int j = i + 1; j < items.Count; j++)
                 if (ReferenceEquals(items[i], items[j])) return false;
         return true;
+    }
+
+    // [Network] (0.13.25). The only send-queue read in the game, inside ZDOMan.SendZDOs, goes
+    // through NetworkModule.QueueForSendGate. Run against the real method with a recording
+    // socket: the stock rule stops a player's package at 10 KB, the lift lets up to 32 KB
+    // through, the switch and the stand-down give back the game's own numbers, PlayFab counts
+    // its real bytes in flight, and Steam's send-rate window follows the switch.
+    private void TestNetworkSendLimit()
+    {
+        Check(new ItemDropMultiplierModule(new ValheimOneConfig(Path.Combine(_root, "class-drops.cfg")).Features).Classification == FeatureClassification.Synced,
+            "Drops is labelled Synced (rolled in the nearby player's game)");
+        Check(new GatheringModule(new ValheimOneConfig(Path.Combine(_root, "class-gathering.cfg")).Features).Classification == FeatureClassification.Synced,
+            "Gathering is labelled Synced");
+        Check(new WorldEventsModule(new ValheimOneConfig(Path.Combine(_root, "class-events.cfg")).Features).Classification == FeatureClassification.Synced,
+            "Events is labelled Synced (guardian powers run in each player's game)");
+
+        Patches? sendPatches = Harmony.GetPatchInfo(AccessTools.Method(typeof(ZDOMan), "SendZDOs"));
+        Check(sendPatches != null && sendPatches.Transpilers.Any(p => p.owner == ValheimOnePlugin.PluginGuid),
+            "the plugin rewrote the queue read in ZDOMan.SendZDOs");
+        Patches? ratePatches = Harmony.GetPatchInfo(AccessTools.Method(typeof(ZSteamSocket), "RegisterGlobalCallbacks"));
+        Check(ratePatches != null && ratePatches.Postfixes.Any(p => p.owner == ValheimOnePlugin.PluginGuid),
+            "the plugin follows the game's Steam send-rate setup");
+        Check(NetworkModule.IsLiftActive(), "the lift is on by default on a dedicated server with no other network mod");
+        // The game's own Steam setup (150 KB/s fixed on its first socket), with the plugin's postfix after it.
+        AccessTools.Method(typeof(ZSteamSocket), "RegisterGlobalCallbacks").Invoke(null, null);
+        Check(SteamRate(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMin) == NetworkModule.LiftedSendRateMin &&
+              SteamRate(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMax) == NetworkModule.LiftedSendRateMax,
+            "after the game's Steam setup the send-rate window is 256 KB/s to 1 MB/s (game: 150 KB/s fixed)");
+
+        var settings = new ValheimOneConfig(Path.Combine(_root, "network-overlay.cfg"));
+        var module = new NetworkModule(settings.Features, new ModLogger(Logger));
+        Check(module.Classification == FeatureClassification.ServerAuthoritative && module.Section == "Network",
+            "[Network] is a server-side section that works for every player");
+        object? previous = Get(typeof(NetworkModule), "_active");
+        var zdos = new List<ZDO>();
+        var foreign = new Harmony("test.foreign.sendqueue");
+        try
+        {
+            Set(typeof(NetworkModule), "_active", module);
+            Set(module, "_patched", true);
+            Set(module, "_resolved", true);
+            Set(module, "_standDownReason", null);
+
+            Check(NetworkModule.QueueForSendGate(new RecordingSocket { Queue = 0 }) == -22528 &&
+                  NetworkModule.QueueForSendGate(new RecordingSocket { Queue = 15000 }) == -7528 &&
+                  NetworkModule.QueueForSendGate(new RecordingSocket { Queue = 40000 }) == 17472,
+                "Steam queue is counted against a 32 KB window (22,528 bytes low)");
+
+            Check(PlayFabGate(30000) == 7472 && PlayFabGate(50000) == 12500 && PlayFabGate(10000) == -12528,
+                "PlayFab counts real bytes in flight against 32 KB, never above the game's own quarter-scaled figure");
+
+            // A cluster of objects one player must receive: about 49 KB of world data.
+            var center = new Vector3(5120f, 30f, 5120f);
+            byte[] fill = new byte[100];
+            for (int i = 0; i < 300; i++)
+            {
+                ZDO zdo = ZDOMan.instance.CreateNewZDO(center + new Vector3(i % 20, 0f, i / 20), "Wood".GetStableHashCode());
+                zdo.Set("vo_network_fill", fill);
+                zdos.Add(zdo);
+            }
+
+            int lifted = SendOnce(center, 0, out bool sentLifted);
+            Check(sentLifted && lifted > 12000 && lifted < 33600,
+                "with the lift one player's package reaches past 10 KB up to 32 KB (" + lifted + " bytes)");
+            int liftedBusy = SendOnce(center, 11000, out bool sentBusy);
+            Check(sentBusy && liftedBusy > 10240 && liftedBusy < 22500,
+                "with 11 KB already on the way the lift still sends the rest of 32 KB (" + liftedBusy + " bytes)");
+            SendOnce(center, 31000, out bool sentFull);
+            Check(!sentFull, "with 31 KB on the way the lift sends nothing, like the game at 10 KB");
+
+            Check(settings.ApplyOverlay("[Network] / Enabled=false\n") == 1 && !NetworkModule.IsLiftActive(),
+                "the switch turns the lift off live");
+            int stock = SendOnce(center, 0, out bool sentStock);
+            Check(sentStock && stock > 8000 && stock < 10700, "switched off, the package stops at the game's 10 KB (" + stock + " bytes)");
+            SendOnce(center, 11000, out bool sentStockBusy);
+            Check(!sentStockBusy, "switched off, 11 KB on the way blocks the player as in the game");
+            Check(NetworkModule.QueueForSendGate(new RecordingSocket { Queue = 4321 }) == 4321, "switched off, the game's queue figure passes through");
+            Call(typeof(NetworkModule), "ApplySteamSendRates");
+            Check(SteamRate(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMin) == NetworkModule.VanillaSendRate &&
+                  SteamRate(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMax) == NetworkModule.VanillaSendRate,
+                "switched off live, Steam's send rate goes back to the game's 150 KB/s");
+            settings.ClearOverlay();
+            Call(typeof(NetworkModule), "ApplySteamSendRates");
+            Check(NetworkModule.IsLiftActive() &&
+                  SteamRate(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMax) == NetworkModule.LiftedSendRateMax,
+                "switched back on live, the lift and the send-rate window return");
+
+            // Stand-down: another mod that changes the queue, then Better Networking by its GUID.
+            foreign.Patch(AccessTools.Method(typeof(ZSteamSocket), "GetSendQueueSize"),
+                postfix: new HarmonyMethod(typeof(RuntimeRegression), nameof(ForeignQueuePostfix)));
+            Set(module, "_resolved", false);
+            Check(!NetworkModule.IsLiftActive() && (NetworkModule.StandDownReason ?? "").Contains("test.foreign.sendqueue"),
+                "a mod that patches the queue makes the lift stand down and is named");
+            Check(NetworkModule.QueueForSendGate(new RecordingSocket { Queue = 5000 }) == 5000, "standing down, the game's figure passes through");
+            foreign.UnpatchSelf();
+            Set(module, "_resolved", false);
+            Set(module, "_standDownReason", null);
+            Check(NetworkModule.IsLiftActive(), "the lift returns once no other mod changes the queue");
+            foreign.Patch(AccessTools.Method(typeof(ZSteamSocket), "RegisterGlobalCallbacks"),
+                postfix: new HarmonyMethod(typeof(RuntimeRegression), nameof(ForeignRatePostfix)));
+            Set(module, "_resolved", false);
+            Check(!NetworkModule.IsLiftActive() && (NetworkModule.StandDownReason ?? "").Contains("test.foreign.sendqueue"),
+                "a mod that sets Steam's send rate makes the lift stand down too");
+            foreign.UnpatchSelf();
+            Set(module, "_resolved", false);
+            Set(module, "_standDownReason", null);
+            Chainloader.PluginInfos["DIT.BetterNetworking10"] =
+                (PluginInfo)FormatterServices.GetUninitializedObject(typeof(PluginInfo));
+            Set(module, "_resolved", false);
+            Check(!NetworkModule.IsLiftActive() && (NetworkModule.StandDownReason ?? "").Contains("Better Networking 1.0"),
+                "the Better Networking 1.0 fork by its GUID makes the lift stand down");
+            Chainloader.PluginInfos.Remove("DIT.BetterNetworking10");
+            Set(module, "_resolved", false);
+            Set(module, "_standDownReason", null);
+            Chainloader.PluginInfos[NetworkModule.BetterNetworkingGuid] =
+                (PluginInfo)FormatterServices.GetUninitializedObject(typeof(PluginInfo));
+            Set(module, "_resolved", false);
+            Check(!NetworkModule.IsLiftActive() && (NetworkModule.StandDownReason ?? "").Contains("Better Networking"),
+                "Better Networking by its GUID makes the lift stand down");
+            int bn = SendOnce(center, 0, out bool sentBn);
+            Check(sentBn && bn < 10700, "standing down, the package stops at the game's 10 KB (" + bn + " bytes)");
+        }
+        finally
+        {
+            Chainloader.PluginInfos.Remove(NetworkModule.BetterNetworkingGuid);
+            Chainloader.PluginInfos.Remove("DIT.BetterNetworking10");
+            foreign.UnpatchSelf();
+            settings.ClearOverlay();
+            Set(typeof(NetworkModule), "_active", previous);
+            Call(typeof(NetworkModule), "ApplySteamSendRates");
+            foreach (ZDO zdo in zdos) ZDOMan.instance.DestroyZDO(zdo);
+        }
+    }
+
+    private static void ForeignQueuePostfix(ref int __result) { }
+
+    private static void ForeignRatePostfix() { }
+
+    private static int PlayFabGate(int bytesInFlight)
+    {
+        var socket = (ZPlayFabSocket)FormatterServices.GetUninitializedObject(typeof(ZPlayFabSocket));
+        var queue = new ZPlayFabSocket.InFlightQueue();
+        queue.Enqueue(new byte[bytesInFlight]);
+        Set(socket, "m_inFlightQueue", queue);
+        return NetworkModule.QueueForSendGate(socket);
+    }
+
+    // One call of the real ZDOMan.SendZDOs for a fresh player standing at center whose socket
+    // reports `queue` bytes already on the way; returns the size of the package it sent.
+    private int SendOnce(Vector3 center, int queue, out bool sent)
+    {
+        var socket = new RecordingSocket { Queue = queue };
+        var netPeer = new ZNetPeer(socket, server: false)
+        {
+            m_uid = 424242,
+            m_refPos = center,
+            m_simulationDistance = SimulationDistance.OriginalDistance,
+        };
+        object peer = Activator.CreateInstance(AccessTools.Inner(typeof(ZDOMan), "ZDOPeer"), nonPublic: true);
+        Set(peer, "m_peer", netPeer);
+        sent = (bool)AccessTools.Method(typeof(ZDOMan), "SendZDOs").Invoke(ZDOMan.instance, new[] { peer, (object)false });
+        Check(sent == (socket.Sent.Count == 1), "SendZDOs reports exactly what it put on the socket");
+        return socket.Sent.Count == 0 ? 0 : socket.Sent[0];
+    }
+
+    private static int SteamRate(ESteamNetworkingConfigValue key)
+    {
+        ulong size = 4;
+        var type = ESteamNetworkingConfigDataType.k_ESteamNetworkingConfig_Int32;
+        GCHandle handle = GCHandle.Alloc(new byte[4], GCHandleType.Pinned);
+        try
+        {
+            ESteamNetworkingGetConfigValueResult result = SteamGameServerNetworkingUtils.GetConfigValue(
+                key, ESteamNetworkingConfigScope.k_ESteamNetworkingConfig_Global, IntPtr.Zero, out type, handle.AddrOfPinnedObject(), ref size);
+            return result == ESteamNetworkingGetConfigValueResult.k_ESteamNetworkingGetConfigValue_OK ||
+                   result == ESteamNetworkingGetConfigValueResult.k_ESteamNetworkingGetConfigValue_OKInherited
+                ? Marshal.ReadInt32(handle.AddrOfPinnedObject())
+                : -1;
+        }
+        finally
+        {
+            handle.Free();
+        }
+    }
+
+    private sealed class RecordingSocket : ISocket
+    {
+        public int Queue;
+        public readonly List<int> Sent = new();
+        public bool IsConnected() => true;
+        public void Send(ZPackage pkg) => Sent.Add(pkg.Size());
+        public ZPackage Recv() => null!;
+        public int GetSendQueueSize() => Queue;
+        public int GetCurrentSendRate() => 0;
+        public bool IsHost() => false;
+        public void Dispose() { }
+        public bool GotNewData() => false;
+        public void Close() { }
+        public string GetEndPointString() => "recording";
+        public void GetAndResetStats(out int totalSent, out int totalRecv) { totalSent = 0; totalRecv = 0; }
+        public void GetConnectionQuality(out float localQuality, out float remoteQuality, out int ping, out float outByteSec, out float inByteSec)
+        { localQuality = remoteQuality = 1f; ping = 0; outByteSec = inByteSec = 0f; }
+        public ISocket Accept() => null!;
+        public int GetHostPort() => 0;
+        public bool Flush() => true;
+        public string GetHostName() => "recording";
+        public void VersionMatch() { }
     }
 
     private static object? Call(object target, string name, params object[] args) =>

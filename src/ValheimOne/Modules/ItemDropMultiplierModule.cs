@@ -44,7 +44,7 @@ public sealed class ItemDropMultiplierModule : IFeatureModule
 
     public bool IsEnabled => _feature.Enabled.Value;
 
-    public FeatureClassification Classification => FeatureClassification.ServerAuthoritative;
+    public FeatureClassification Classification => FeatureClassification.Synced;
 
     public void ApplyPatches(Harmony harmony)
     {

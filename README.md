@@ -88,6 +88,12 @@ A standalone A2S query responder so server browsers, monitoring tools and hostin
 
 See [docs/query.md](docs/query.md).
 
+### 📶 Higher Per-Player Send Limit
+
+Valheim lets the server have at most 10 KB of world updates on the way to each player, and serves one player per frame. When several players play close together, each one also needs everything the others change, the 10 KB runs out, and updates arrive in bursts: players and creatures rubber-band until the group splits up. ValheimOne raises that limit to 32 KB on Steam and crossplay alike, and lets Steam send up to 1 MB/s per player instead of a fixed 150 KB/s. It runs on the server only, so players install nothing and vanilla and console players get it too.
+
+It is on by default. Set `Enabled = false` in `[Network]` to go back to Valheim's own limit. It turns itself off, with one line in the log, when Better Networking or another mod that changes the same limit is installed.
+
 ---
 
 <a id="install"></a>
@@ -152,7 +158,7 @@ Building from source is `./build.sh`; see [RELEASING.md](RELEASING.md) for packa
 
 ## Configuration
 
-Everything lives in one file: `BepInEx/config/valheimone.cfg`. Every gameplay section is off by default, so a fresh install changes nothing until you opt in.
+Everything lives in one file: `BepInEx/config/valheimone.cfg`. Every gameplay section is off by default, so a fresh install changes no gameplay until you opt in. The [send limit](#-higher-per-player-send-limit) in `[Network]` is on by default.
 
 Start the server once to generate the file, then enable the sections you want:
 

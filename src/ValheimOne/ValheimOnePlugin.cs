@@ -27,6 +27,7 @@ public sealed class ValheimOnePlugin : BaseUnityPlugin
     private ActivityLogModule? _activityLogModule;
     private ValheimOne.LiveMap.LiveMapModule? _liveMapModule;
     private DiscordModule? _discordModule;
+    private NetworkModule? _networkModule;
     private ServerSessionEventSource? _sessionEvents;
     private ValheimOneConfig? _settings;
     private ModLogger? _log;
@@ -58,6 +59,8 @@ public sealed class ValheimOnePlugin : BaseUnityPlugin
             sessionEvents,
             dataDirectory);
         _liveMapModule = liveMapModule;
+        var networkModule = new NetworkModule(settings.Features, _log);
+        _networkModule = networkModule;
         IReadOnlyList<IFeatureModule> modules = new IFeatureModule[]
         {
             new PlayerModule(settings.Features),
@@ -91,6 +94,7 @@ public sealed class ValheimOnePlugin : BaseUnityPlugin
             new ValheimOne.Query.QueryModule(settings.Features),
             discordModule,
             new ServerHostModule(serverConfig, _log),
+            networkModule,
         };
 
         settings.WriteDefaultsIfNeeded();
@@ -143,6 +147,13 @@ public sealed class ValheimOnePlugin : BaseUnityPlugin
         _configWatcher = new ConfigHotReloadWatcher(configPath, _log);
         _configWatcher.Start();
         _log.Info($"Configuration: {configPath}");
+    }
+
+    // Unity runs Start on the first frame after every plugin's Awake, so other plugins'
+    // patches are in place by now.
+    private void Start()
+    {
+        _networkModule?.ReportStartupState();
     }
 
     private void Update()
@@ -219,6 +230,7 @@ public sealed class ValheimOnePlugin : BaseUnityPlugin
 
         _discordModule?.Shutdown();
         _discordModule = null;
+        _networkModule = null;
         _liveMapModule?.Shutdown();
         _liveMapModule = null;
         _activityLogModule?.Shutdown();

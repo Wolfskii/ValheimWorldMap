@@ -4,6 +4,16 @@ All notable changes to ValheimOne will be documented in this file. This project 
 
 ## [Unreleased]
 
+## [0.13.25] - 2026-10-19
+
+### Added
+
+- `[Network]`, on by default: a higher per-player send limit on dedicated servers. Valheim's server sends a player world updates only while less than 10,240 bytes are waiting or unacknowledged on that player's connection, at most 10,240 bytes minus that per turn, one player per frame. When several players are close together each one also needs everything the others change, so that window runs out and updates arrive in bursts (players and creatures rubber-band until the group splits up). The one place the game reads the queue, `ZDOMan.SendZDOs`, now counts it against 32,768 bytes instead: on Steam the real queue less 22,528 bytes, on crossplay (PlayFab) the real bytes in flight less 22,528, never more than the game's own figure, so a player is never sent less than before. On Steam the per-player send rate, which the game pins at 150 KB/s, becomes 256 KB/s to 1 MB/s. Nothing changes on the wire, so players install nothing and vanilla and console players get it too. `Enabled = false` restores the game's numbers live. It stands down with one log line when Better Networking (`CW_Jesse.BetterNetworking`) or any other mod that patches the queue read is loaded, so the two never stack. The idea of counting the queue low comes from CW_Jesse's Better Networking (MIT); this is a separate implementation that changes only the server's read.
+
+### Changed
+
+- `[Drops]`, `[Gathering]` and `[Events]` are labelled Synced in the startup log, matching the module docs: drops and gathering are rolled in the nearby player's own game, and guardian powers run in each player's game. Nothing else changes; both labels were already synced to players with ValheimOne.
+
 ## [0.13.24] - 2026-10-17
 
 ### Fixed

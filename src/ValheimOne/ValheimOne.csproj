@@ -35,9 +35,9 @@
     <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
     <AssemblyName>ValheimOne</AssemblyName>
     <RootNamespace>ValheimOne</RootNamespace>
-    <Version>0.13.24</Version>
-    <AssemblyVersion>0.13.24.0</AssemblyVersion>
-    <FileVersion>0.13.24.0</FileVersion>
+    <Version>0.13.25</Version>
+    <AssemblyVersion>0.13.25.0</AssemblyVersion>
+    <FileVersion>0.13.25.0</FileVersion>
     <ValheimManaged Condition="'$(ValheimManaged)' == ''">$(HOME)/valheim-modding/server/valheim_server_Data/Managed</ValheimManaged>
     <ValheimPublicized Condition="'$(ValheimPublicized)' == ''">$(HOME)/valheim-modding/publicized</ValheimPublicized>
     <BepInExCore Condition="'$(BepInExCore)' == ''">$(HOME)/valheim-modding/bepinex/BepInExPack_Valheim/BepInEx/core</BepInExCore>
@@ -66,6 +66,7 @@
     <Reference Include="assembly_utils"><HintPath>$(ValheimPublicized)/assembly_utils_publicized.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="assembly_guiutils"><HintPath>$(ValheimPublicized)/assembly_guiutils_publicized.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="SoftReferenceableAssets"><HintPath>$(ValheimManaged)/SoftReferenceableAssets.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="com.rlabrecque.steamworks.net"><HintPath>$(ValheimManaged)/com.rlabrecque.steamworks.net.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Splatform"><HintPath>$(ValheimManaged)/Splatform.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine"><HintPath>$(ValheimManaged)/UnityEngine.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.CoreModule"><HintPath>$(ValheimManaged)/UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
