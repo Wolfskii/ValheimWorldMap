@@ -177,6 +177,85 @@ class ReleaseSafety(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 self.verify_downloads(invalid)
 
+    def todays_page(self):
+        """Part of mod 3571 as Nexus listed it on 2026-10-19: the current plugin, the one before
+        it, and two old Full archives that stayed quarantined."""
+        def record(file_id, name, version, category, scan, primary=0, manager=0):
+            return {"fileId": file_id, "name": name, "version": version, "category": category,
+                    "primary": primary, "manager": manager, "requirementsAlert": 1, "scannedV2": scan}
+        return {"data": {
+            "mod": {"name": "ValheimOne", "version": "0.13.24", "status": "published"},
+            "modFiles": [record(25316, "ValheimOne Full 0.13.20", "0.13.20", "OLD_VERSION", "QUARANTINED", manager=1),
+                         record(25756, "ValheimOne 0.13.24", "0.13.24", "MAIN", "VERIFIED", primary=1),
+                         record(25350, "ValheimOne Full 0.13.21", "0.13.21", "ARCHIVED", "QUARANTINED", manager=1),
+                         record(25584, "ValheimOne 0.13.23", "0.13.23", "OLD_VERSION", "VERIFIED")],
+        }}
+
+    def test_report_lists_every_file_newest_first_and_names_the_newest_download(self):
+        with contextlib.redirect_stdout(io.StringIO()) as log:
+            table = sync.report_files(self.todays_page())
+        self.assertEqual([line for line in table.splitlines() if re.match(r"\| \d", line)], [
+            "| 25756 | ValheimOne 0.13.24 | 0.13.24 | MAIN | VERIFIED | yes |",
+            "| 25584 | ValheimOne 0.13.23 | 0.13.23 | OLD_VERSION | VERIFIED | yes |",
+            "| 25350 | ValheimOne Full 0.13.21 | 0.13.21 | ARCHIVED | QUARANTINED | no |",
+            "| 25316 | ValheimOne Full 0.13.20 | 0.13.20 | OLD_VERSION | QUARANTINED | no |",
+        ])
+        self.assertIn("Newest downloadable plugin: 0.13.24 (file 25756, VERIFIED)", table)
+        self.assertIn("Nexus file 25350: ValheimOne Full 0.13.21, 0.13.21, ARCHIVED, QUARANTINED, downloadable: no",
+                      log.getvalue())
+        self.assertIn("Nexus: Newest downloadable plugin: 0.13.24 (file 25756", log.getvalue())
+
+    def test_only_a_listed_approved_plugin_counts_as_downloadable(self):
+        page = self.todays_page()
+        files = page["data"]["modFiles"]
+        files[1]["scannedV2"] = "QUARANTINED"
+        self.assertEqual(sync.newest_downloadable(sync.page_files(page)),
+                         "Newest downloadable plugin: 0.13.23 (file 25584, VERIFIED)")
+        files[3]["category"] = "ARCHIVED"
+        files.append({"fileId": 25800, "name": "ValheimOne Full 0.13.25", "version": "0.13.25",
+                      "category": "MAIN", "scannedV2": "VERIFIED"})
+        for status in ["QUEUED", "NOT_SCANNED", "unknown", None]:
+            files.append({"fileId": 25900, "name": "ValheimOne 0.13.26", "version": "0.13.26",
+                          "category": "OLD_VERSION", "scannedV2": status})
+            with self.subTest(status=status):
+                self.assertEqual(sync.newest_downloadable(sync.page_files(page)), "Newest downloadable "
+                                 "plugin: none (no plugin archive on the Files tab has passed its scan)")
+            files.pop()
+
+    def test_report_tolerates_a_failed_or_empty_query(self):
+        for response in [{}, {"data": None}, {"errors": [{"message": "unavailable"}]},
+                         {"data": {"modFiles": None}}, {"data": {"modFiles": ["not a record"]}}]:
+            with self.subTest(response=response), contextlib.redirect_stdout(io.StringIO()):
+                table = sync.report_files(response)
+            self.assertIn("| - | no file records returned | - | - | - | - |", table)
+            self.assertIn("Newest downloadable plugin: none", table)
+
+    def test_nexus_fields_cannot_break_the_log_or_the_table(self):
+        page = {"data": {"modFiles": [{"fileId": "1|2", "name": "x\n::error::boom | y", "version": "0.13.1`",
+                                       "category": "MAIN", "scannedV2": "VERIFIED\n::notice::z"}]}}
+        with contextlib.redirect_stdout(io.StringIO()) as log:
+            table = sync.report_files(page)
+        self.assertNotIn("::", log.getvalue() + table)
+        self.assertTrue(all(line.startswith("Nexus") for line in log.getvalue().splitlines()))
+        row = [line for line in table.splitlines() if line.startswith("| 1")]
+        self.assertEqual(len(row), 1)
+        self.assertEqual(row[0].count("|"), 7)
+
+    def test_failures_name_the_newest_download_and_a_cleared_plugin_adds_a_notice(self):
+        newest = "Newest downloadable plugin: 0.13.23 (file 25584, VERIFIED)"
+        for status, message in [("QUARANTINED", "quarantined"), ("QUEUED", "not passed its scan")]:
+            page = self.todays_page()
+            page["data"]["modFiles"][1]["scannedV2"] = status
+            with self.subTest(status=status), \
+                    self.assertRaisesRegex(ValueError, re.escape(message) + ".*" + re.escape(newest)):
+                sync.verify_public_downloads(page, "0.13.24", {"game_scoped_id": "25756"})
+        for status in sync.APPROVED_SCANS:
+            page = self.todays_page()
+            page["data"]["modFiles"][1]["scannedV2"] = status
+            with self.subTest(status=status), contextlib.redirect_stdout(io.StringIO()) as log:
+                sync.verify_public_downloads(page, "0.13.24", {"game_scoped_id": "25756"})
+            self.assertIn(f"::notice::Nexus plugin 0.13.24 scan cleared ({status})", log.getvalue())
+
 
 class PluginOnlyMirror(unittest.TestCase):
     """End-to-end prepare/verify runs against a fake Nexus API that refuses any Full lookup."""
@@ -219,14 +298,16 @@ class PluginOnlyMirror(unittest.TestCase):
         if path == f"/v3/mod-files/{self.PLUGIN_GROUP}/versions":
             return {"data": {"versions": self.plugin_versions}}
         if path == "/v2/graphql":
+            files = [{"fileId": int(self.PLUGIN_FILE), "name": f"ValheimOne {self.VERSION}", "version": self.VERSION,
+                      "category": "MAIN", "primary": 1, "manager": 0, "requirementsAlert": 1,
+                      "scannedV2": self.plugin_scan}]
+            if any(group["id"] == self.FULL_GROUP for group in self.groups):
+                files.append({"fileId": 25350, "name": "ValheimOne Full 0.13.2", "version": "0.13.2",
+                              "category": "MAIN", "primary": 0, "manager": 1, "requirementsAlert": 0,
+                              "scannedV2": "QUARANTINED"})
             return {"data": {
                 "mod": {"name": "ValheimOne", "version": self.VERSION, "status": "published"},
-                "modFiles": [
-                    {"fileId": int(self.PLUGIN_FILE), "version": self.VERSION, "category": "MAIN", "primary": 1,
-                     "manager": 0, "requirementsAlert": 1, "scannedV2": self.plugin_scan},
-                    {"fileId": 25350, "version": "0.13.2", "category": "MAIN", "primary": 0,
-                     "manager": 1, "requirementsAlert": 0, "scannedV2": "QUARANTINED"},
-                ],
+                "modFiles": files,
             }}
         if path == f"/v1/games/valheim/mods/md5_search/{self.plugin_md5}.json":
             return [{"mod": {"mod_id": 3571}, "file_details": {"file_id": int(self.PLUGIN_FILE)}}]
@@ -239,6 +320,9 @@ class PluginOnlyMirror(unittest.TestCase):
         outputs.write_text("")
         env = {k: v for k, v in os.environ.items() if k not in ("RELEASE_TAG", "NEXUS_KNOWN_FULL_QUARANTINE")}
         env["GITHUB_OUTPUT"] = str(outputs)
+        summary = self.folder / "step-summary"
+        summary.write_text("")
+        env["GITHUB_STEP_SUMMARY"] = str(summary)
         with patch.dict(os.environ, env, clear=True), \
                 patch.object(sync, "github_release", return_value=self.release), \
                 patch.object(sync, "nexus", side_effect=self.fake_nexus), \
@@ -287,6 +371,44 @@ class PluginOnlyMirror(unittest.TestCase):
         self.plugin_versions = []
         with self.assertRaisesRegex(ValueError, "plugin version is missing"):
             self.run_mode("verify")
+
+    def summary(self):
+        return (self.folder / "step-summary").read_text()
+
+    def test_verify_writes_every_file_state_once_including_the_old_full_file(self):
+        _, _, log = self.run_mode("prepare")
+        self.assertIn(f"Nexus file {self.PLUGIN_FILE}: ValheimOne {self.VERSION}, {self.VERSION}, MAIN, VERIFIED, "
+                      "downloadable: yes", log)
+        self.assertEqual(self.summary(), "")
+        _, _, log = self.run_mode("verify")
+        summary = self.summary()
+        self.assertEqual(summary.count("### Nexus files on the page"), 1)
+        self.assertEqual([line for line in summary.splitlines() if re.match(r"\| \d", line)], [
+            "| 25350 | ValheimOne Full 0.13.2 | 0.13.2 | MAIN | QUARANTINED | no |",
+            f"| {self.PLUGIN_FILE} | ValheimOne {self.VERSION} | {self.VERSION} | MAIN | VERIFIED | yes |",
+        ])
+        self.assertIn(f"Newest downloadable plugin: {self.VERSION} (file {self.PLUGIN_FILE}, VERIFIED)", summary)
+        self.assertIn(f"::notice::Nexus plugin {self.VERSION} scan cleared (VERIFIED)", log)
+
+    def test_failed_prepare_still_writes_the_file_states(self):
+        self.plugin_scan = "QUARANTINED"
+        with self.assertRaisesRegex(ValueError, "plugin archive is quarantined"):
+            self.run_mode("prepare")
+        self.assertIn(f"| {self.PLUGIN_FILE} | ValheimOne {self.VERSION} | {self.VERSION} | MAIN | QUARANTINED | no |",
+                      self.summary())
+        self.assertIn("Newest downloadable plugin: none", self.summary())
+
+    def test_missing_version_still_reports_the_page_before_failing(self):
+        self.plugin_versions = []
+        with self.assertRaisesRegex(ValueError, "plugin version is missing"):
+            self.run_mode("verify")
+        self.assertIn("### Nexus files on the page", self.summary())
+
+    def test_prepare_for_a_missing_version_reads_no_scan_state(self):
+        self.plugin_versions = []
+        self.run_mode("prepare")
+        self.assertNotIn("/v2/graphql", self.calls)
+        self.assertEqual(self.summary(), "")
 
     def test_github_integrity_still_covers_both_zips(self):
         (self.folder / f"ValheimOne-full-{self.VERSION}.zip").write_bytes(b"tampered")

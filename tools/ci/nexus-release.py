@@ -24,6 +24,10 @@ REPOSITORY = "humangenome/ValheimOne"
 MOD_PAGE_ID = "3571"
 PLUGIN_GROUP = r"ValheimOne(?: \d+\.\d+\.\d+)?"
 FULL_GROUP = r"ValheimOne Full(?: \d+\.\d+\.\d+)?"
+APPROVED_SCANS = ("VERIFIED", "INTERNALLY_VERIFIED", "MANUALLY_VERIFIED")
+# File categories listed on the public Files tab. ARCHIVED files sit in the file archive and
+# removed ones are gone, so a file only counts as downloadable in one of these.
+LISTED_CATEGORIES = ("MAIN", "UPDATE", "OPTIONAL", "OLD_VERSION", "MISCELLANEOUS")
 # Nexus field limits. Version, name and changelog: the API's own schema
 # (https://api.nexusmods.com/openapi.yaml, CreateModFileVersionRequest and
 # AddModChangelogEntriesRequest, read 2026-10-14). Description: the Nexus file edit form
@@ -191,11 +195,71 @@ def public_download_status(game_id):
         "query": """query($mod:ID!,$game:ID!) {
             mod(modId:$mod,gameId:$game) { name version status }
             modFiles(modId:$mod,gameId:$game) {
-                fileId version category primary manager requirementsAlert scannedV2
+                fileId name version category primary manager requirementsAlert scannedV2
             }
         }""",
         "variables": {"mod": MOD_PAGE_ID, "game": str(game_id)},
     })
+
+
+def page_files(response):
+    """Every file record on the page, newest upload first (Nexus numbers files in upload order)."""
+    data = (response or {}).get("data") or {}
+    files = [f for f in (data.get("modFiles") or []) if isinstance(f, dict)]
+    return sorted(files, key=file_number, reverse=True)
+
+
+def file_number(file):
+    try:
+        return int(file.get("fileId"))
+    except (TypeError, ValueError):
+        return -1
+
+
+def is_downloadable(file):
+    return file.get("scannedV2") in APPROVED_SCANS and file.get("category") in LISTED_CATEGORIES
+
+
+def shown(value, limit=60):
+    """A Nexus field as plain text that cannot break a log line, an annotation or a table cell."""
+    text = re.sub(r"[^A-Za-z0-9 _'().-]", "?", "" if value is None else str(value))[:limit]
+    return text or "-"
+
+
+def newest_downloadable(files):
+    """One line naming the newest plugin-only archive a visitor can download from the Files tab."""
+    newest = next((f for f in files if re.fullmatch(PLUGIN_GROUP, str(f.get("name") or ""), re.IGNORECASE)
+                   and is_downloadable(f)), None)
+    if newest is None:
+        return "Newest downloadable plugin: none (no plugin archive on the Files tab has passed its scan)"
+    return (f"Newest downloadable plugin: {shown(newest.get('version'))} "
+            f"(file {shown(newest.get('fileId'))}, {shown(newest.get('scannedV2'))})")
+
+
+def report_files(response):
+    """Log every file on the page with its scan state, newest upload first, and return the
+    same as a step-summary table. A report only: verify_public_downloads decides pass or fail."""
+    files = page_files(response)
+    rows = []
+    for file in files:
+        number, name, version, category, scan = (
+            shown(file.get(k)) for k in ("fileId", "name", "version", "category", "scannedV2"))
+        downloadable = "yes" if is_downloadable(file) else "no"
+        print(f"Nexus file {number}: {name}, {version}, {category}, {scan}, downloadable: {downloadable}")
+        rows.append(f"| {number} | {name} | {version} | {category} | {scan} | {downloadable} |")
+    newest = newest_downloadable(files)
+    print(f"Nexus: {newest}")
+    return "\n".join([
+        "### Nexus files on the page", "",
+        "| File | Name | Version | Place | Scan | Downloadable |", "|---|---|---|---|---|---|",
+        *(rows or ["| - | no file records returned | - | - | - | - |"]), "", newest, ""])
+
+
+def write_summary(text):
+    target = os.environ.get("GITHUB_STEP_SUMMARY")
+    if text and target:
+        with open(target, "a") as stream:
+            stream.write(text + "\n")
 
 
 def verify_public_downloads(response, version, current):
@@ -223,10 +287,12 @@ def verify_public_downloads(response, version, current):
     if file.get("primary") != 1 or file.get("manager") != 0 or file.get("requirementsAlert") != 1:
         raise ValueError("Nexus plugin primary/download/requirements controls do not match")
     status = file.get("scannedV2")
+    newest = newest_downloadable(page_files(response))
     if status == "QUARANTINED":
-        raise ValueError("Nexus plugin archive is quarantined; moderator review required. Do not reupload.")
-    if status not in ("VERIFIED", "INTERNALLY_VERIFIED", "MANUALLY_VERIFIED"):
-        raise ValueError("Nexus plugin archive has not passed its scan; download remains unverified")
+        raise ValueError(f"Nexus plugin archive is quarantined; moderator review required. Do not reupload. {newest}")
+    if status not in APPROVED_SCANS:
+        raise ValueError(f"Nexus plugin archive has not passed its scan; download remains unverified. {newest}")
+    print(f"::notice::Nexus plugin {version} scan cleared ({status}); it is the download on the Files tab")
     print("Nexus plugin: scan cleared and download controls verified")
 
 
@@ -273,23 +339,35 @@ def main():
                "description": nexus_description(version),
                "changelog": nexus_changelog(release.get("body"), version),
                "plugin_id": plugin_id, "plugin_upload": "false" if current else "true"}
-    if not current and args.mode == "verify":
-        raise ValueError("Nexus plugin version is missing")
-    print(f"Nexus plugin: {'version present' if current else 'upload required'}")
-    if current:
-        if not current.get("is_primary"):
-            raise ValueError("Plugin-only must be the primary Nexus download")
-        # Quarantined files can disappear from the legacy hash index. Report the
-        # actual moderation state before that lookup can obscure it with a 404.
-        verify_public_downloads(public_download_status(mod["game_id"]), version, current)
-        verify_indexed_hash(folder, plugin_archive, current)
-        print("Nexus plugin: hash-index verified")
-    if args.mode == "verify":
-        changelogs = nexus(f"/v1/games/valheim/mods/{MOD_PAGE_ID}/changelogs.json")
-        if version not in changelogs:
-            raise ValueError("Nexus release changelog is missing")
-        print("Nexus plugin version, archive index, primary download, page version and changelog verified")
-        print("Scan state verified. Check the plugin download button on the Files page and download it normally.")
+    # Every file's scan state goes to the step summary once per run: from the verify step, or
+    # from whichever step fails first (a failed prepare skips verify).
+    summary, failed = "", True
+    try:
+        page = None
+        if current or args.mode == "verify":
+            page = public_download_status(mod["game_id"])
+            summary = report_files(page)
+        if not current and args.mode == "verify":
+            raise ValueError("Nexus plugin version is missing")
+        print(f"Nexus plugin: {'version present' if current else 'upload required'}")
+        if current:
+            if not current.get("is_primary"):
+                raise ValueError("Plugin-only must be the primary Nexus download")
+            # Quarantined files can disappear from the legacy hash index. Report the
+            # actual moderation state before that lookup can obscure it with a 404.
+            verify_public_downloads(page, version, current)
+            verify_indexed_hash(folder, plugin_archive, current)
+            print("Nexus plugin: hash-index verified")
+        if args.mode == "verify":
+            changelogs = nexus(f"/v1/games/valheim/mods/{MOD_PAGE_ID}/changelogs.json")
+            if version not in changelogs:
+                raise ValueError("Nexus release changelog is missing")
+            print("Nexus plugin version, archive index, primary download, page version and changelog verified")
+            print("Scan state verified. Check the plugin download button on the Files page and download it normally.")
+        failed = False
+    finally:
+        if failed or args.mode == "verify":
+            write_summary(summary)
     write_outputs(outputs)
 
 
