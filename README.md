@@ -88,9 +88,16 @@ A standalone A2S query responder so server browsers, monitoring tools and hostin
 
 See [docs/query.md](docs/query.md).
 
-### 📶 Higher Per-Player Send Limit
+### 📶 Less Lag When You Play Together
 
 Valheim lets the server have at most 10 KB of world updates on the way to each player, and serves one player per frame. When several players play close together, each one also needs everything the others change, the 10 KB runs out, and updates arrive in bursts: players and creatures rubber-band until the group splits up. ValheimOne raises that limit to 32 KB on Steam and crossplay alike, and lets Steam send up to 1 MB/s per player instead of a fixed 150 KB/s. It runs on the server only, so players install nothing and vanilla and console players get it too.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/send-limit-lab-dark.png">
+  <img src="docs/screenshots/send-limit-lab-light.png" alt="Bar chart from a lab server: four players together with 41 moving things each got 2.1 updates a second for every moving thing nearby with Valheim's own limit and 5.6 with ValheimOne's higher limit; at 200 ms ping, 1.2 and 3.9" width="800">
+</picture>
+
+Measured on a lab server with four test players, 150 seconds per run. Valheim sends each moving thing at most about 6 times a second, so a quiet group gains little; a busy group gets back to near that ceiling.
 
 It is on by default. Set `Enabled = false` in `[Network]` to go back to Valheim's own limit. It turns itself off, with one line in the log, when Better Networking or another mod that changes the same limit is installed.
 
@@ -158,7 +165,7 @@ Building from source is `./build.sh`; see [RELEASING.md](RELEASING.md) for packa
 
 ## Configuration
 
-Everything lives in one file: `BepInEx/config/valheimone.cfg`. Every gameplay section is off by default, so a fresh install changes no gameplay until you opt in. The [send limit](#-higher-per-player-send-limit) in `[Network]` is on by default.
+Everything lives in one file: `BepInEx/config/valheimone.cfg`. Every gameplay section is off by default, so a fresh install changes no gameplay until you opt in. The [send limit](#-less-lag-when-you-play-together) in `[Network]` is on by default.
 
 Start the server once to generate the file, then enable the sections you want:
 
