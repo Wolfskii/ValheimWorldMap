@@ -75,7 +75,7 @@ internal static class MapPingPatch
     private const int ShoutType = 2;
     private const int PingType = 3;
     private const int RecentPingCapacity = 16;
-    private const int RecentChatCapacity = 32;
+    private const int RecentChatCapacity = ChatHistoryStore.Capacity;
     private const int MaximumChatTextLength = 256;
     private const long ServerChatCaptureLifetimeMilliseconds = 10_000L;
     private const string ServerUserId = "Server_0";
@@ -120,17 +120,21 @@ internal static class MapPingPatch
     private static int _nextChatIndex;
     private static int _chatCount;
     private static long _nextServerChatCaptureId;
+    private static ChatHistoryStore? _chatHistoryStore;
     private static int _failureLogged;
 
     public static void ApplyPatches(
         Harmony harmony,
         Func<bool> enabledCheck,
         Func<bool> mirrorChatCheck,
-        ModLogger log)
+        ModLogger log,
+        string dataDirectory)
     {
         _enabledCheck = enabledCheck;
         _mirrorChatCheck = mirrorChatCheck;
+        _ = _mirrorChatCheck;
         _log = log;
+        ConfigureChatPersistence(dataDirectory, log);
         MethodInfo handleRoutedRpc = AccessTools.Method(
             typeof(ZRoutedRpc),
             "HandleRoutedRPC",
@@ -175,7 +179,6 @@ internal static class MapPingPatch
     {
         get
         {
-            ClearChatBufferWhenDisabled();
             lock (RecentChatsLock)
             {
                 return _nextChatSequence;
@@ -186,11 +189,6 @@ internal static class MapPingPatch
     public static long CopyChatAfter(long cursor, List<MapChatSnapshot> destination)
     {
         destination.Clear();
-        if (!ChatMirroringEnabled())
-        {
-            ClearRecentPlayerChats();
-        }
-
         lock (RecentChatsLock)
         {
             int firstIndex =
@@ -210,7 +208,6 @@ internal static class MapPingPatch
 
     public static void RefreshChatConfiguration()
     {
-        ClearChatBufferWhenDisabled();
     }
 
     public static long ExpectServerChat(string text)
@@ -288,20 +285,30 @@ internal static class MapPingPatch
             var parameters = new ZPackage(data.m_parameters.GetArray());
             Vector3 position = parameters.ReadVector3();
             int type = parameters.ReadInt();
-            bool mirrorChat = ChatMirroringEnabled();
-            if (!mirrorChat)
-            {
-                ClearRecentPlayerChats();
-            }
-
-            if (type != PingType && type != SayType && type != ShoutType)
+            if (type != PingType && !IsSpokenChat(type))
             {
                 return;
             }
 
-            if (type != PingType && !mirrorChat)
+            if (type == PingType)
             {
-                // Do not even materialize player speech from the package while disabled.
+                string pingName = parameters.ReadString();
+                lock (RecentPingsLock)
+                {
+                    long sequence = ++_nextSequence;
+                    RecentPings[_nextIndex] = new MapPingSnapshot(
+                        sequence,
+                        position.x,
+                        position.z,
+                        pingName,
+                        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    _nextIndex = (_nextIndex + 1) % RecentPingCapacity;
+                    if (_count < RecentPingCapacity)
+                    {
+                        _count++;
+                    }
+                }
+
                 return;
             }
 
@@ -310,61 +317,33 @@ internal static class MapPingPatch
             string text = parameters.ReadString();
 
             long unixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            if (type != PingType)
+            text = TrimAndLimitChatText(text);
+            if (text.Length == 0)
             {
-                text = TrimAndLimitChatText(text);
-                if (text.Length == 0)
-                {
-                    return;
-                }
-
-                // Recheck after decoding so a hot reload that disables mirroring cannot race a write.
-                if (!ChatMirroringEnabled())
-                {
-                    ClearRecentPlayerChats();
-                    return;
-                }
-
-                string playerName = (name ?? string.Empty).Trim();
-                bool serverOriginated = type == ShoutType &&
-                                        string.Equals(playerName, "Server", StringComparison.Ordinal) &&
-                                        string.Equals(userId, ServerUserId, StringComparison.Ordinal);
-                lock (RecentChatsLock)
-                {
-                    if (serverOriginated &&
-                        TryMatchServerChatCaptureLocked(text, unixMs, out bool suppress) &&
-                        suppress)
-                    {
-                        return;
-                    }
-
-                    AppendChatLocked(
-                        position.x,
-                        position.z,
-                        playerName,
-                        text,
-                        type == ShoutType,
-                        unixMs,
-                        serverOriginated);
-                }
-
                 return;
             }
 
-            lock (RecentPingsLock)
+            string playerName = (name ?? string.Empty).Trim();
+            bool serverOriginated = IsShout(type) &&
+                                    string.Equals(playerName, "Server", StringComparison.Ordinal) &&
+                                    string.Equals(userId, ServerUserId, StringComparison.Ordinal);
+            lock (RecentChatsLock)
             {
-                long sequence = ++_nextSequence;
-                RecentPings[_nextIndex] = new MapPingSnapshot(
-                    sequence,
+                if (serverOriginated &&
+                    TryMatchServerChatCaptureLocked(text, unixMs, out bool suppress) &&
+                    suppress)
+                {
+                    return;
+                }
+
+                AppendChatLocked(
                     position.x,
                     position.z,
-                    name,
-                    unixMs);
-                _nextIndex = (_nextIndex + 1) % RecentPingCapacity;
-                if (_count < RecentPingCapacity)
-                {
-                    _count++;
-                }
+                    playerName,
+                    text,
+                    IsShout(type),
+                    unixMs,
+                    serverOriginated);
             }
         }
         catch (Exception exception)
@@ -385,57 +364,16 @@ internal static class MapPingPatch
         }
     }
 
-    private static bool ChatMirroringEnabled()
+    private static bool IsSpokenChat(int type)
     {
-        return _enabledCheck?.Invoke() == true && _mirrorChatCheck?.Invoke() == true;
+        // Valheim has shipped both Whisper=0,Normal=1,Shout=2 and Normal=0,Shout=1.
+        // Keep every spoken line. Only the historical shout value is styled as a shout.
+        return type == 0 || type == SayType || type == ShoutType;
     }
 
-    private static void ClearChatBufferWhenDisabled()
+    private static bool IsShout(int type)
     {
-        if (!ChatMirroringEnabled())
-        {
-            ClearRecentPlayerChats();
-        }
-    }
-
-    private static void ClearRecentPlayerChats()
-    {
-        lock (RecentChatsLock)
-        {
-            int firstIndex =
-                (_nextChatIndex - _chatCount + RecentChatCapacity) % RecentChatCapacity;
-            bool containsPlayerChat = false;
-            for (int offset = 0; offset < _chatCount; offset++)
-            {
-                if (!RecentChats[(firstIndex + offset) % RecentChatCapacity].ServerOriginated)
-                {
-                    containsPlayerChat = true;
-                    break;
-                }
-            }
-
-            if (!containsPlayerChat)
-            {
-                return;
-            }
-
-            var retained = new MapChatSnapshot[RecentChatCapacity];
-            int retainedCount = 0;
-            for (int offset = 0; offset < _chatCount; offset++)
-            {
-                MapChatSnapshot chat =
-                    RecentChats[(firstIndex + offset) % RecentChatCapacity];
-                if (chat.ServerOriginated)
-                {
-                    retained[retainedCount++] = chat;
-                }
-            }
-
-            Array.Clear(RecentChats, 0, RecentChats.Length);
-            Array.Copy(retained, RecentChats, retainedCount);
-            _nextChatIndex = retainedCount % RecentChatCapacity;
-            _chatCount = retainedCount;
-        }
+        return type == ShoutType;
     }
 
     private static void AppendChatLocked(
@@ -462,6 +400,8 @@ internal static class MapPingPatch
         {
             _chatCount++;
         }
+
+        PersistChatLocked();
     }
 
     private static PendingServerChatCapture? FindServerChatCaptureLocked(long captureId)
@@ -533,5 +473,83 @@ internal static class MapPingPatch
         }
 
         return text.Substring(0, length).TrimEnd();
+    }
+
+    public static void ShutdownChatPersistence()
+    {
+        ChatHistoryStore? store;
+        lock (RecentChatsLock)
+        {
+            PersistChatLocked();
+            store = _chatHistoryStore;
+            _chatHistoryStore = null;
+        }
+
+        store?.Dispose();
+    }
+
+    private static void ConfigureChatPersistence(string dataDirectory, ModLogger log)
+    {
+        ChatHistoryStore? previous;
+        lock (RecentChatsLock)
+        {
+            previous = _chatHistoryStore;
+            _chatHistoryStore = null;
+        }
+
+        previous?.Dispose();
+        if (string.IsNullOrWhiteSpace(dataDirectory))
+        {
+            return;
+        }
+
+        var store = new ChatHistoryStore(dataDirectory, log);
+        MapChatSnapshot[] loaded = store.Load();
+        lock (RecentChatsLock)
+        {
+            _chatHistoryStore = store;
+            HydrateChatLocked(loaded);
+        }
+    }
+
+    private static void HydrateChatLocked(MapChatSnapshot[] loaded)
+    {
+        Array.Clear(RecentChats, 0, RecentChats.Length);
+        _nextChatIndex = 0;
+        _chatCount = 0;
+        _nextChatSequence = 0L;
+        for (int index = 0; index < loaded.Length; index++)
+        {
+            MapChatSnapshot chat = loaded[index];
+            RecentChats[_nextChatIndex] = chat;
+            _nextChatIndex = (_nextChatIndex + 1) % RecentChatCapacity;
+            if (_chatCount < RecentChatCapacity)
+            {
+                _chatCount++;
+            }
+
+            if (chat.Sequence > _nextChatSequence)
+            {
+                _nextChatSequence = chat.Sequence;
+            }
+        }
+    }
+
+    private static void PersistChatLocked()
+    {
+        ChatHistoryStore? store = _chatHistoryStore;
+        if (store == null)
+        {
+            return;
+        }
+
+        var snapshot = new MapChatSnapshot[_chatCount];
+        int firstIndex = (_nextChatIndex - _chatCount + RecentChatCapacity) % RecentChatCapacity;
+        for (int offset = 0; offset < _chatCount; offset++)
+        {
+            snapshot[offset] = RecentChats[(firstIndex + offset) % RecentChatCapacity];
+        }
+
+        store.ScheduleSave(snapshot);
     }
 }

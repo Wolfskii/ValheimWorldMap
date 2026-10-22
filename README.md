@@ -44,7 +44,7 @@ Turn on the heatmap to see where everyone has been over the last day or week, op
 
 ### 🔗 Share It With Your Players
 
-Three views, and you decide who gets which. **Admin** sees everything. **Shared** shows live players and the layers you allow, with no admin actions. **Public** is a read-only link with its own fog and layer settings. Fog can be a light tint or a solid cover that hides everything nobody has explored yet, including region names and markers, and Public viewers cannot switch the cover off. The settings are under [Fog and Shared map layers](#fog-and-shared-map-layers).
+Three views, and you decide who gets which. **Admin** sees everything. **Shared** shows live players and the layers you allow, with no admin actions. **Public** is a read-only link with its own fog and layer settings: spawn and trader markers by default, and more only if you name them. Fog can be a light tint or a solid cover that hides everything nobody has explored yet, including region names and markers, and Public viewers cannot switch the cover off. The settings are under [Fog and Shared map layers](#fog-and-shared-map-layers).
 
 ![ValheimOne public map with explored fog](docs/screenshots/livemap-public-fog.png)
 
@@ -117,7 +117,7 @@ You need a Valheim Dedicated Server with the Valheim-compatible [BepInEx pack](h
 2. Stop the server and extract the ZIP into its root folder. The plugin belongs at `BepInEx/plugins/ValheimOne.dll`. Preserve your existing `BepInEx/config/valheimone.cfg` when updating; do not replace it with the packaged defaults. On Linux, use the Full pack's `start_server_bepinex.sh` with your usual server arguments.
 3. Start once to generate any missing config, then stop before the initial configuration. In the existing `[LiveMap]` section of `BepInEx/config/valheimone.cfg`, set `Enabled = true`, choose a long unique `AccessToken`, and set `PublicView = false` while configuring access. The live map is disabled by default.
 4. Start the server and wait for the world to load. The default map port is TCP `8790`. On a trusted network, open `http://your-server-ip:8790/?token=YOUR_ADMIN_TOKEN` with your own values. Use an HTTPS reverse proxy for authenticated access over the Internet.
-5. Set `ConsoleEnabled = true` in `[LiveMap]` if you want browser commands. Set `EntityLayer = true` to collect the optional ships, carts and portals layer. For sharing, configure a separate `ShareToken` or enable the tokenless `PublicView`, then choose the fog and public layers. Keep your admin token private.
+5. Set `ConsoleEnabled = true` in `[LiveMap]` if you want browser commands. Set `EntityLayer = true` to collect the optional ships, carts and portals layer. For a public link, `PublicPoiGroups` and `PublicEntityGroups` stay narrow until you name extra groups, and `PublicChat`, `PublicLeaderboard`, and `PublicEvents` stay off. For sharing, configure a separate `ShareToken` or enable the tokenless `PublicView`, then choose the fog and public layers. Keep your admin token private.
 
 ```text
 Valheim Dedicated Server/
