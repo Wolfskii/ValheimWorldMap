@@ -35,7 +35,7 @@ jobs:
 
   mirror:
     needs: checks
-    if: github.repository == 'humangenome/ValheimOne' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'release' && github.event.release.prerelease == false))
+    if: github.repository == 'Wolfskii/ValheimWorldMap' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'release' && github.event.release.prerelease == false))
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -59,7 +59,7 @@ jobs:
         with:
           api_key: ${{ secrets.NEXUSMODS_API_KEY }}
           file_id: ${{ steps.prepare.outputs.plugin_id }}
-          filename: ${{ runner.temp }}/nexus-release/ValheimOne-${{ steps.prepare.outputs.version }}.zip
+          filename: ${{ runner.temp }}/nexus-release/ValheimWorldMap-${{ steps.prepare.outputs.version }}.zip
           version: ${{ steps.prepare.outputs.version }}
           display_name: ${{ steps.prepare.outputs.display_name }}
           description: ${{ steps.prepare.outputs.description }}

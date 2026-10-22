@@ -11,19 +11,19 @@ using BepInEx.Bootstrap;
 using HarmonyLib;
 using Steamworks;
 using UnityEngine;
-using ValheimOne.Configuration;
-using ValheimOne.Infrastructure;
-using ValheimOne.LiveMap;
-using ValheimOne.Modules;
-using ValheimOne.Networking;
+using ValheimWorldMap.Configuration;
+using ValheimWorldMap.Infrastructure;
+using ValheimWorldMap.LiveMap;
+using ValheimWorldMap.Modules;
+using ValheimWorldMap.Networking;
 
-namespace ValheimOne.RuntimeRegression;
+namespace ValheimWorldMap.RuntimeRegression;
 
-// Test-only plugin. Never packaged with ValheimOne. Uses real game components and
+// Test-only plugin. Never packaged with ValheimWorldMap. Uses real game components and
 // inventory serialization; the deterministic two-replica transport lets us deliver
 // replies before data, duplicate replies, and ownership changes in controlled order.
-[BepInPlugin("com.humangenome.valheimone.regression", "ValheimOne runtime regression", "1.0.0")]
-[BepInDependency(ValheimOnePlugin.PluginGuid)]
+[BepInPlugin("com.wolfskii.valheimworldmap.regression", "ValheimWorldMap runtime regression", "1.0.0")]
+[BepInDependency(ValheimWorldMapPlugin.PluginGuid)]
 public sealed class RuntimeRegression : BaseUnityPlugin
 {
     private const long RemotePeer = 8877665511L;
@@ -38,14 +38,14 @@ public sealed class RuntimeRegression : BaseUnityPlugin
 
     private void Awake()
     {
-        if (Environment.GetEnvironmentVariable("VALHEIMONE_RUNTIME_REGRESSION") != "1")
+        if (Environment.GetEnvironmentVariable("VALHEIMWORLDMAP_RUNTIME_REGRESSION") != "1")
         {
             enabled = false;
             return;
         }
         _root = Path.Combine(Paths.ConfigPath, "runtime-regression");
         Directory.CreateDirectory(_root);
-        _harmony = new Harmony("com.humangenome.valheimone.regression");
+        _harmony = new Harmony("com.wolfskii.valheimworldmap.regression");
         _harmony.Patch(AccessTools.Method(typeof(ZNetView), "InvokeRPC",
             new[] { typeof(long), typeof(string), typeof(object[]) }),
             prefix: new HarmonyMethod(typeof(RuntimeRegression), nameof(CaptureRpc)));
@@ -74,7 +74,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
             TestFoodDegradation();
             TestRegionLabels();
             TestMapStartSettings();
-            TestValheimOneZeroData();
+            TestValheimWorldMapZeroData();
             TestDropsChestLoot();
             TestNetworkSendLimit();
             PublicLayerRegression.Run(Check, _root, new ModLogger(Logger));
@@ -112,7 +112,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
 
     private static bool CaptureRpc(ZNetView __instance, long __0, string __1, object[] __2)
     {
-        if (!CapturedViews.Contains(__instance) || !__1.StartsWith("VO_CraftChest", StringComparison.Ordinal))
+        if (!CapturedViews.Contains(__instance) || !__1.StartsWith("VWM_CraftChest", StringComparison.Ordinal))
             return true;
         Packets.Enqueue((__0, __1, ((ZPackage)__2[0]).GetArray()));
         return false;
@@ -165,7 +165,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
     {
         MethodInfo callback = AccessTools.Method(typeof(ZPlayFabMatchmaking), "OnCheckJoinCodeSuccess");
         MethodInfo prefix = AccessTools.Method(typeof(CrossplayLobbyCompatibility), "CheckJoinCodePrefix");
-        var pluginHarmony = new Harmony(ValheimOnePlugin.PluginGuid);
+        var pluginHarmony = new Harmony(ValheimWorldMapPlugin.PluginGuid);
         _lobbyFixture = (ZPlayFabMatchmaking)FormatterServices.GetUninitializedObject(typeof(ZPlayFabMatchmaking));
         FieldInfo serverDataField = AccessTools.Field(typeof(ZPlayFabMatchmaking), "m_serverData");
         object serverData = Activator.CreateInstance(serverDataField.FieldType, true);
@@ -273,7 +273,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
     {
         string config = Path.Combine(_root, name + ".cfg");
         File.WriteAllText(config, "[MapSharing]\nEnabled = true\nSharedExploration = true\nExplorationSyncSeconds = 10\n");
-        var settings = new ValheimOneConfig(config);
+        var settings = new ValheimWorldMapConfig(config);
         var module = new MapSharingModule(settings.Features, new ModLogger(Logger));
         Set(module, "_storageDirectory", store);
         return module;
@@ -309,9 +309,9 @@ public sealed class RuntimeRegression : BaseUnityPlugin
 
     private void TestWebFogCartography()
     {
-        Assembly assembly = typeof(ValheimOnePlugin).Assembly;
-        Type fogType = assembly.GetType("ValheimOne.LiveMap.FogTracker", true)!;
-        Type readerType = assembly.GetType("ValheimOne.LiveMap.MapTableReader", true)!;
+        Assembly assembly = typeof(ValheimWorldMapPlugin).Assembly;
+        Type fogType = assembly.GetType("ValheimWorldMap.LiveMap.FogTracker", true)!;
+        Type readerType = assembly.GetType("ValheimWorldMap.LiveMap.MapTableReader", true)!;
         string directory = Path.Combine(_root, "web-fog");
         var log = new ModLogger(Logger);
         object fog = Activator.CreateInstance(fogType, directory, log)!;
@@ -471,7 +471,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
         for (int i = 0; i < 20; i++) ownerZdo.Set("regression_revision", i);
         Check(ChestOwnership.Prepare(replica, player) == ChestOwnership.Result.Pending, "foreign ownership does not authorize immediate consumption");
         var request = Packets.Dequeue();
-        Check(request.Target == owner && request.Name == "VO_CraftChestRequest", "request sent to current owner");
+        Check(request.Target == owner && request.Name == "VWM_CraftChestRequest", "request sent to current owner");
         Call(typeof(ChestOwnership), "HandleRequest", authority, RemotePeer, new ZPackage(request.Data));
         var reply = Packets.Dequeue();
         Check(reply.Target == RemotePeer && !authorityView.IsOwner(), "only owner grants handoff and relinquishes ownership");
@@ -667,7 +667,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
 
     private void TestProductionSettings()
     {
-        var settings = new ValheimOneConfig(Path.Combine(_root, "production-overlay.cfg"));
+        var settings = new ValheimWorldMapConfig(Path.Combine(_root, "production-overlay.cfg"));
         var module = new ProductionSpeedsModule(settings.Features, new ModLogger(Logger));
         object? previous = Get(typeof(ProductionSpeedsModule), "_active");
         var stations = new List<(Smelter Station, float Seconds, int Queue)>();
@@ -699,7 +699,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
 
     private void TestWeatherDamage()
     {
-        var settings = new ValheimOneConfig(Path.Combine(_root, "structural-overlay.cfg"));
+        var settings = new ValheimWorldMapConfig(Path.Combine(_root, "structural-overlay.cfg"));
         var module = new StructuralIntegrityModule(settings.Features);
         object? previous = Get(typeof(StructuralIntegrityModule), "_active");
         try
@@ -721,7 +721,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
 
     private void TestFoodDegradation()
     {
-        var settings = new ValheimOneConfig(Path.Combine(_root, "food-overlay.cfg"));
+        var settings = new ValheimWorldMapConfig(Path.Combine(_root, "food-overlay.cfg"));
         var module = new FoodDurationModule(settings.Features);
         object? previous = Get(typeof(FoodDurationModule), "_active");
         try
@@ -804,7 +804,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
     // change to any of them against the values of the last start so it can restart (0.13.22).
     private void TestMapStartSettings()
     {
-        Type behaviourType = typeof(ValheimOnePlugin).Assembly.GetType("ValheimOne.LiveMap.LiveMapBehaviour", true)!;
+        Type behaviourType = typeof(ValheimWorldMapPlugin).Assembly.GetType("ValheimWorldMap.LiveMap.LiveMapBehaviour", true)!;
         object? behaviour = AccessTools.Property(behaviourType, "Instance").GetValue(null, null);
         Check(behaviour != null, "live map behaviour exists");
         object config = AccessTools.Field(behaviourType, "_config").GetValue(behaviour)!;
@@ -842,8 +842,8 @@ public sealed class RuntimeRegression : BaseUnityPlugin
 
     private void TestRegionLabels()
     {
-        Type catalog = AccessTools.TypeByName("ValheimOne.LiveMap.BiomeRegionCatalog");
-        Type snapshot = AccessTools.TypeByName("ValheimOne.LiveMap.BiomeRegionSnapshot");
+        Type catalog = AccessTools.TypeByName("ValheimWorldMap.LiveMap.BiomeRegionCatalog");
+        Type snapshot = AccessTools.TypeByName("ValheimWorldMap.LiveMap.BiomeRegionSnapshot");
         int perBiome = (int)AccessTools.Field(catalog, "MaximumRegionsPerBiome").GetRawConstantValue();
         Check(perBiome == 6, "region labels keep six candidates per biome");
         IList NewCandidates() => (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(snapshot));
@@ -879,7 +879,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
     }
 
     // Valheim 1.0 content the map and modules must know by name (checked on Valheim 1.0.20).
-    private void TestValheimOneZeroData()
+    private void TestValheimWorldMapZeroData()
     {
         var known = new HashSet<string>(
             ZoneSystem.instance.m_locations.Where(l => l != null).Select(l => l.m_prefabName),
@@ -919,7 +919,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
         Check(mist.Blue > mist.Green && mist.Red > mist.Green, "Mistlands is drawn mauve like the game's map mist");
 
         // Gathering covers the Deep North wood, ice and ore.
-        var gatherSettings = new ValheimOneConfig(Path.Combine(_root, "gathering-overlay.cfg"));
+        var gatherSettings = new ValheimWorldMapConfig(Path.Combine(_root, "gathering-overlay.cfg"));
         var gathering = new GatheringModule(gatherSettings.Features);
         Check(gatherSettings.ApplyOverlay(
             "[Gathering] / Enabled=true\n[Gathering] / Timberwood=100\n" +
@@ -939,7 +939,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
             "Timberwood, Ice and Petrified Tissue drop counts follow their own settings");
 
         // The Frigid Kiln makes Liquid Frost from Ice and takes no ore.
-        var productionSettings = new ValheimOneConfig(Path.Combine(_root, "frigid-overlay.cfg"));
+        var productionSettings = new ValheimWorldMapConfig(Path.Combine(_root, "frigid-overlay.cfg"));
         var production = new ProductionSpeedsModule(productionSettings.Features, new ModLogger(Logger));
         object? previousProduction = Get(typeof(ProductionSpeedsModule), "_active");
         try
@@ -965,7 +965,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
         finally { Set(typeof(ProductionSpeedsModule), "_active", previousProduction); }
 
         // Deep North storage: Grausten chest and wardrobe.
-        var containerSettings = new ValheimOneConfig(Path.Combine(_root, "containers-overlay.cfg"));
+        var containerSettings = new ValheimWorldMapConfig(Path.Combine(_root, "containers-overlay.cfg"));
         var containers = new ContainerSizesModule(containerSettings.Features, new ModLogger(Logger));
         object? previousContainers = Get(typeof(ContainerSizesModule), "_active");
         try
@@ -1004,7 +1004,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
     // now stays native, and the extras it still scales are separate items.
     private void TestDropsChestLoot()
     {
-        var settings = new ValheimOneConfig(Path.Combine(_root, "drops-overlay.cfg"));
+        var settings = new ValheimWorldMapConfig(Path.Combine(_root, "drops-overlay.cfg"));
         var module = new ItemDropMultiplierModule(settings.Features);
         object? previous = Get(typeof(ItemDropMultiplierModule), "_active");
         try
@@ -1073,18 +1073,18 @@ public sealed class RuntimeRegression : BaseUnityPlugin
     // its real bytes in flight, and Steam's send-rate window follows the switch.
     private void TestNetworkSendLimit()
     {
-        Check(new ItemDropMultiplierModule(new ValheimOneConfig(Path.Combine(_root, "class-drops.cfg")).Features).Classification == FeatureClassification.Synced,
+        Check(new ItemDropMultiplierModule(new ValheimWorldMapConfig(Path.Combine(_root, "class-drops.cfg")).Features).Classification == FeatureClassification.Synced,
             "Drops is labelled Synced (rolled in the nearby player's game)");
-        Check(new GatheringModule(new ValheimOneConfig(Path.Combine(_root, "class-gathering.cfg")).Features).Classification == FeatureClassification.Synced,
+        Check(new GatheringModule(new ValheimWorldMapConfig(Path.Combine(_root, "class-gathering.cfg")).Features).Classification == FeatureClassification.Synced,
             "Gathering is labelled Synced");
-        Check(new WorldEventsModule(new ValheimOneConfig(Path.Combine(_root, "class-events.cfg")).Features).Classification == FeatureClassification.Synced,
+        Check(new WorldEventsModule(new ValheimWorldMapConfig(Path.Combine(_root, "class-events.cfg")).Features).Classification == FeatureClassification.Synced,
             "Events is labelled Synced (guardian powers run in each player's game)");
 
         Patches? sendPatches = Harmony.GetPatchInfo(AccessTools.Method(typeof(ZDOMan), "SendZDOs"));
-        Check(sendPatches != null && sendPatches.Transpilers.Any(p => p.owner == ValheimOnePlugin.PluginGuid),
+        Check(sendPatches != null && sendPatches.Transpilers.Any(p => p.owner == ValheimWorldMapPlugin.PluginGuid),
             "the plugin rewrote the queue read in ZDOMan.SendZDOs");
         Patches? ratePatches = Harmony.GetPatchInfo(AccessTools.Method(typeof(ZSteamSocket), "RegisterGlobalCallbacks"));
-        Check(ratePatches != null && ratePatches.Postfixes.Any(p => p.owner == ValheimOnePlugin.PluginGuid),
+        Check(ratePatches != null && ratePatches.Postfixes.Any(p => p.owner == ValheimWorldMapPlugin.PluginGuid),
             "the plugin follows the game's Steam send-rate setup");
         Check(NetworkModule.IsLiftActive(), "the lift is on by default on a dedicated server with no other network mod");
         // The game's own Steam setup (150 KB/s fixed on its first socket), with the plugin's postfix after it.
@@ -1093,7 +1093,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
               SteamRate(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMax) == NetworkModule.LiftedSendRateMax,
             "after the game's Steam setup the send-rate window is 256 KB/s to 1 MB/s (game: 150 KB/s fixed)");
 
-        var settings = new ValheimOneConfig(Path.Combine(_root, "network-overlay.cfg"));
+        var settings = new ValheimWorldMapConfig(Path.Combine(_root, "network-overlay.cfg"));
         var module = new NetworkModule(settings.Features, new ModLogger(Logger));
         Check(module.Classification == FeatureClassification.ServerAuthoritative && module.Section == "Network",
             "[Network] is a server-side section that works for every player");
@@ -1279,8 +1279,8 @@ public sealed class RuntimeRegression : BaseUnityPlugin
 
 // Opt-in spatial fixture for browser checks. It records known coordinates using
 // the real fog tracker and must only run in a disposable test world.
-[BepInPlugin("com.humangenome.valheimone.foggeometry", "ValheimOne fog geometry probe", "1.0.0")]
-[BepInDependency(ValheimOnePlugin.PluginGuid)]
+[BepInPlugin("com.wolfskii.valheimworldmap.foggeometry", "ValheimWorldMap fog geometry probe", "1.0.0")]
+[BepInDependency(ValheimWorldMapPlugin.PluginGuid)]
 public sealed class FogGeometryProbe : BaseUnityPlugin
 {
     private bool _done;
@@ -1288,14 +1288,14 @@ public sealed class FogGeometryProbe : BaseUnityPlugin
 
     private void Awake()
     {
-        enabled = Environment.GetEnvironmentVariable("VALHEIMONE_FOG_GEOMETRY") == "1";
+        enabled = Environment.GetEnvironmentVariable("VALHEIMWORLDMAP_FOG_GEOMETRY") == "1";
     }
 
     private void Update()
     {
         if (_done || Time.realtimeSinceStartup < _next) return;
         _next = Time.realtimeSinceStartup + 0.5f;
-        Type behaviourType = typeof(ValheimOnePlugin).Assembly.GetType("ValheimOne.LiveMap.LiveMapBehaviour", true)!;
+        Type behaviourType = typeof(ValheimWorldMapPlugin).Assembly.GetType("ValheimWorldMap.LiveMap.LiveMapBehaviour", true)!;
         var behaviour = AccessTools.Property(behaviourType, "Instance").GetValue(null, null) as UnityEngine.Object;
         if (behaviour == null) return;
         object? server = AccessTools.Field(behaviourType, "_httpServer").GetValue(behaviour);

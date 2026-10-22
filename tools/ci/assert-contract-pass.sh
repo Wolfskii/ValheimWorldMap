@@ -15,7 +15,7 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-version_file="${repo_root}/src/ValheimOne/Networking/VersionInfo.cs"
+version_file="${repo_root}/src/ValheimWorldMap/Networking/VersionInfo.cs"
 golden="${repo_root}/tools/golden-fingerprint.txt"
 record="${repo_root}/tools/contract-pass.txt"
 

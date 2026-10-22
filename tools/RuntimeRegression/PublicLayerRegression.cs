@@ -5,10 +5,10 @@ using System.Reflection;
 using System.Threading;
 using HarmonyLib;
 using UnityEngine;
-using ValheimOne.Infrastructure;
-using ValheimOne.LiveMap;
+using ValheimWorldMap.Infrastructure;
+using ValheimWorldMap.LiveMap;
 
-namespace ValheimOne.RuntimeRegression;
+namespace ValheimWorldMap.RuntimeRegression;
 
 // Permission regressions for the owner-controlled public map layers and the chat feed they
 // share with the live map. Everything runs in process on the plugin's own types, with no

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Builds and packages the Thunderstore archive for the current ValheimOne version.
+# Builds and packages the Thunderstore archive for the current ValheimWorldMap version.
 #
-#   ValheimOne-<version>-thunderstore.zip
+#   ValheimWorldMap-<version>-thunderstore.zip
 #       manifest.json, README.md, CHANGELOG.md, icon.png, LICENSE,
-#       plugins/ValheimOne.dll
+#       plugins/ValheimWorldMap.dll
 #
 # The DLL is the Thunderstore build: the same sources as the GitHub release,
-# compiled with -p:ValheimOneHostingCredit=false, which leaves the sidebar footer
+# compiled with -p:ValheimWorldMapHostingCredit=false, which leaves the sidebar footer
 # link out of the live map page. Nothing else differs. tools/ci/hosting-credit-gate.py
 # decompresses the embedded pages and fails if the link is still there.
 #
@@ -28,10 +28,10 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-project="${repo_root}/src/ValheimOne/ValheimOne.csproj"
-build_bin="${repo_root}/src/ValheimOne/bin/Thunderstore"
-build_obj="${repo_root}/src/ValheimOne/obj/Thunderstore"
-dll="${build_bin}/net472/ValheimOne.dll"
+project="${repo_root}/src/ValheimWorldMap/ValheimWorldMap.csproj"
+build_bin="${repo_root}/src/ValheimWorldMap/bin/Thunderstore"
+build_obj="${repo_root}/src/ValheimWorldMap/obj/Thunderstore"
+dll="${build_bin}/net472/ValheimWorldMap.dll"
 ledger="${repo_root}/tools/release/thunderstore-provenance.tsv"
 
 fail() { echo "package-thunderstore: $*" >&2; exit 1; }
@@ -57,12 +57,12 @@ zip_touch_stamp="202001010000.00"
 
 # ------------ version (single source of truth)
 
-version_file="${repo_root}/src/ValheimOne/Networking/VersionInfo.cs"
+version_file="${repo_root}/src/ValheimWorldMap/Networking/VersionInfo.cs"
 version="$(sed -n 's/.*PluginVersion = "\([0-9][^"]*\)".*/\1/p' "${version_file}")"
 [[ -n "${version}" ]] || fail "could not read PluginVersion from ${version_file}"
 [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Thunderstore needs a plain major.minor.patch version, got ${version}"
 minor_line="${version%.*}"
-echo "Packaging ValheimOne ${version} for Thunderstore"
+echo "Packaging ValheimWorldMap ${version} for Thunderstore"
 
 if ${record}; then
     # Record only what is committed: the ledgers and the contract-pass record are
@@ -82,9 +82,9 @@ if ! ${skip_build}; then
         || fail "unable to read the pinned .NET SDK version from global.json"
     resolved_sdk="$(cd "${repo_root}" && dotnet --version 2>/dev/null)" || resolved_sdk="not found"
     [[ "${resolved_sdk}" == "${pinned_sdk}" ]] \
-        || fail "ValheimOne requires .NET SDK ${pinned_sdk}, but dotnet resolved to ${resolved_sdk} (see build.sh)"
+        || fail "ValheimWorldMap requires .NET SDK ${pinned_sdk}, but dotnet resolved to ${resolved_sdk} (see build.sh)"
     rm -rf "${build_bin}" "${build_obj}"
-    DOTNET_ROLL_FORWARD=LatestMajor dotnet build "${project}" -c Release -p:ValheimOneHostingCredit=false
+    DOTNET_ROLL_FORWARD=LatestMajor dotnet build "${project}" -c Release -p:ValheimWorldMapHostingCredit=false
 fi
 [[ -s "${dll}" ]] || fail "missing Thunderstore build ${dll}"
 
@@ -106,8 +106,8 @@ rm -rf "${stage}"
 mkdir -p "${stage}/plugins"
 trap 'rm -rf "${stage}"' EXIT
 
-cp "${dll}" "${stage}/plugins/ValheimOne.dll"
-dll_sha="$(sha256sum "${stage}/plugins/ValheimOne.dll" | cut -d' ' -f1)"
+cp "${dll}" "${stage}/plugins/ValheimWorldMap.dll"
+dll_sha="$(sha256sum "${stage}/plugins/ValheimWorldMap.dll" | cut -d' ' -f1)"
 
 # ------------ icon: Thunderstore requires a 256x256 PNG
 
@@ -144,7 +144,7 @@ grep -q "^## \[${version}\]" "${stage}/CHANGELOG.body" || fail "CHANGELOG.md has
 {
     echo "# Changelog"
     echo
-    echo "Changes in the ${minor_line}.x line. The full history is in the [repository changelog](https://github.com/HumanGenome/ValheimOne/blob/main/CHANGELOG.md)."
+    echo "Changes in the ${minor_line}.x line. The full history is in the [repository changelog](https://github.com/Wolfskii/ValheimWorldMap/blob/main/CHANGELOG.md)."
     echo
     cat "${stage}/CHANGELOG.body"
 } > "${stage}/CHANGELOG.md"
@@ -156,9 +156,9 @@ python3 - "${stage}/manifest.json" "${version}" "${bepinex_dependency}" <<'PY'
 import json, sys
 path, version, dependency = sys.argv[1:4]
 manifest = {
-    "name": "ValheimOne",
+    "name": "ValheimWorldMap",
     "version_number": version,
-    "website_url": "https://github.com/HumanGenome/ValheimOne",
+    "website_url": "https://github.com/Wolfskii/ValheimWorldMap",
     "description": "Server plugin: live browser map, dungeon viewer, item codex, admin console, Discord alerts and opt-in gameplay modules. Map and console work with vanilla clients.",
     "dependencies": [dependency],
 }
@@ -178,11 +178,11 @@ fi
 
 # ------------ zip (deterministic, same recipe as package-release.sh)
 
-zip_path="${out_dir}/ValheimOne-${version}-thunderstore.zip"
+zip_path="${out_dir}/ValheimWorldMap-${version}-thunderstore.zip"
 find "${stage}" -type d -exec chmod 0755 {} +
 find "${stage}" -type f -exec chmod 0644 {} +
 find "${stage}" -exec env TZ=UTC touch -t "${zip_touch_stamp}" {} +
-new_zip="${out_dir}/.ValheimOne-${version}-thunderstore.zip.new"
+new_zip="${out_dir}/.ValheimWorldMap-${version}-thunderstore.zip.new"
 rm -f "${new_zip}"
 (cd "${stage}" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | TZ=UTC zip -q -X "${new_zip}" -@)
 zip_sha="$(sha256sum "${new_zip}" | cut -d' ' -f1)"

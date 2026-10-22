@@ -100,8 +100,8 @@ def generate(seed, size=1024):
         work.mkdir(parents=True, exist_ok=True)
         write_json(folder / 'progress.json', {'state': 'starting', 'percent': 0})
         env = dict(os.environ)
-        env.update({'VO_PREVIEW_DEFER_TERRAIN': os.environ.get('VALHEIM_SEED_DEFER_TERRAIN', '0'),
-                    'VO_PREVIEW_SEED': seed, 'VO_PREVIEW_SIZE': str(size), 'VO_PREVIEW_OUTPUT': str(folder),
+        env.update({'VWM_PREVIEW_DEFER_TERRAIN': os.environ.get('VALHEIM_SEED_DEFER_TERRAIN', '0'),
+                    'VWM_PREVIEW_SEED': seed, 'VWM_PREVIEW_SIZE': str(size), 'VWM_PREVIEW_OUTPUT': str(folder),
                     'DOORSTOP_ENABLED': '1', 'DOORSTOP_TARGET_ASSEMBLY': str(SERVER / 'BepInEx/core/BepInEx.Preloader.dll'),
                     'LD_LIBRARY_PATH': str(SERVER / 'doorstop_libs') + ':' + str(SERVER / 'linux64'),
                     'LD_PRELOAD': str(SERVER / 'doorstop_libs/libdoorstop_x64.so'), 'SteamAppId': '892970'})

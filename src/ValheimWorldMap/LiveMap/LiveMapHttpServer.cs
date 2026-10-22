@@ -1,0 +1,5908 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Net;
+using System.Text;
+using System.Threading;
+using ValheimWorldMap.ActivityLog;
+using ValheimWorldMap.Infrastructure;
+
+namespace ValheimWorldMap.LiveMap;
+
+internal sealed class LiveMapHttpServer
+{
+    private const int MaximumRequestBodyBytes = 8 * 1024;
+    private const int MaximumEventStreams = 8;
+    private const int EventStreamTickMilliseconds = 1000;
+    private const int EventStreamHeartbeatTicks = 15;
+    private const int EventStreamLogBatchSize = 100;
+    private const int EventStreamActivityBatchSize = 100;
+    private const int MaximumInlineLocationPoisPerGroup = 400;
+    private const float MaximumPingWorldRadius = 10500f;
+    private const int MaximumPingLabelLength = 32;
+    private const int MaximumAdminChatTextLength = 256;
+    private const int MaximumAdminChatSendsPerWindow = 5;
+    private const long AdminChatSendWindowTicks = 10L * TimeSpan.TicksPerSecond;
+    private const long ResourceRefreshMilliseconds = 180L * 1000L;
+    private const int MaximumWebPinWritesPerSecond = 5;
+    private const long WebPinWriteWindowTicks = TimeSpan.TicksPerSecond;
+    private const long WebPinWritePruneTicks = 10L * TimeSpan.TicksPerSecond;
+
+    private enum ViewLevel
+    {
+        Admin,
+        Shared,
+        Public,
+    }
+
+    private readonly int _port;
+    private readonly string _bindIp;
+    private readonly bool _publicView;
+    private readonly bool _respectInGameVisibility;
+    private readonly bool _publicShowPlayerNames;
+    private readonly Func<LiveMapSnapshot> _getSnapshot;
+    private readonly Func<PoiCatalog> _getPoiCatalog;
+    private readonly ItemCatalog _itemCatalog;
+    private readonly Func<ResourcePoiMapSnapshot> _getResourcePoiSnapshot;
+    private readonly Action _noteResourcesRequested;
+    private readonly Func<PlayerBaseMapSnapshot> _getPlayerBaseSnapshot;
+    private readonly Action _noteBasesRequested;
+    private readonly Func<MapTableSnapshot> _getMapTableSnapshot;
+    private readonly Func<WebPinStore?> _getWebPinStore;
+    private readonly Func<ActivityHeatmap?> _getActivityHeatmap;
+    private readonly Func<LeaderboardStore?> _getLeaderboardStore;
+    private readonly Func<TimelapseRecorder?> _getTimelapseRecorder;
+    private readonly Func<EntityMapSnapshot> _getEntitySnapshot;
+    private readonly Func<EntityFocusSnapshot> _getEntityFocusSnapshot;
+    private readonly Action<bool, bool> _noteEntitiesRequested;
+    private readonly Action<string> _noteEntityFocusRequested;
+    private readonly Func<DungeonRegistrySnapshot> _getDungeonSnapshot;
+    private readonly Func<DungeonRegistrySnapshot> _ensureDungeonsScanned;
+    private readonly Func<float, float, float, string?> _getDungeonId;
+    private readonly PositionHistory _positionHistory;
+    private readonly Func<string> _getFogMode;
+    private readonly Func<float> _getEffectiveUpdateSeconds;
+    private readonly FogTracker _fogTracker;
+    private readonly WorldMapRenderer _renderer;
+    private readonly Func<float, float, string, bool> _enqueueMapPing;
+    private readonly LiveMapConfig _config;
+    private readonly ConsoleBridge? _consoleBridge;
+    private readonly LogRingBuffer? _logRingBuffer;
+    private readonly ActivityLogModule _activityLog;
+    private readonly ModLogger _log;
+    private string AccessToken => NormalizeToken(_config.AccessToken);
+    private string ShareToken => NormalizeToken(_config.ShareToken);
+    private readonly object _fogPngLock = new object();
+    private readonly object _exploredPctLock = new object();
+    private readonly object _webPinWriteRateLock = new object();
+    private readonly object _adminChatRateLock = new object();
+    private readonly Queue<long> _adminChatSendTicks = new Queue<long>();
+    private readonly Dictionary<string, (long WindowStartTicks, int Count)> _webPinWriteRates =
+        new Dictionary<string, (long WindowStartTicks, int Count)>(StringComparer.Ordinal);
+    private HttpListener? _listener;
+    private Thread? _listenerThread;
+    private byte[]? _fogPng;
+    private long _fogPngRevision = -1;
+    private bool _fogPngSolid;
+    private byte[]? _chartFogPng;
+    private long _chartFogPngRevision = -1;
+    private bool _chartFogPngSolid;
+    private long _exploredPctRevision = -1;
+    private double _exploredPctValue;
+    private long _webPinWriteLastPruneTicks;
+    private bool _accessTokenWarningLogged;
+    private bool _consoleTokenWarningLogged;
+    private int _eventStreamCount;
+    private volatile bool _stopping;
+
+    public LiveMapHttpServer(
+        int port,
+        string bindIp,
+        bool adminSeesAll,
+        bool publicView,
+        bool respectInGameVisibility,
+        bool publicShowPlayerNames,
+        Func<LiveMapSnapshot> getSnapshot,
+        Func<PoiCatalog> getPoiCatalog,
+        ItemCatalog itemCatalog,
+        Func<ResourcePoiMapSnapshot> getResourcePoiSnapshot,
+        Action noteResourcesRequested,
+        Func<PlayerBaseMapSnapshot> getPlayerBaseSnapshot,
+        Action noteBasesRequested,
+        Func<MapTableSnapshot> getMapTableSnapshot,
+        Func<WebPinStore?> getWebPinStore,
+        Func<ActivityHeatmap?> getActivityHeatmap,
+        Func<LeaderboardStore?> getLeaderboardStore,
+        Func<TimelapseRecorder?> getTimelapseRecorder,
+        Func<EntityMapSnapshot> getEntitySnapshot,
+        Func<EntityFocusSnapshot> getEntityFocusSnapshot,
+        Action<bool, bool> noteEntitiesRequested,
+        Action<string> noteEntityFocusRequested,
+        Func<DungeonRegistrySnapshot> getDungeonSnapshot,
+        Func<DungeonRegistrySnapshot> ensureDungeonsScanned,
+        Func<float, float, float, string?> getDungeonId,
+        PositionHistory positionHistory,
+        Func<string> getFogMode,
+        Func<float> getEffectiveUpdateSeconds,
+        FogTracker fogTracker,
+        WorldMapRenderer renderer,
+        Func<float, float, string, bool> enqueueMapPing,
+        LiveMapConfig config,
+        ConsoleBridge? consoleBridge,
+        LogRingBuffer? logRingBuffer,
+        ActivityLogModule activityLog,
+        ModLogger log)
+    {
+        _port = port;
+        _bindIp = bindIp.Trim();
+        _publicView = publicView;
+        _respectInGameVisibility = respectInGameVisibility;
+        _publicShowPlayerNames = publicShowPlayerNames;
+        _getSnapshot = getSnapshot;
+        _getPoiCatalog = getPoiCatalog;
+        _itemCatalog = itemCatalog;
+        _getResourcePoiSnapshot = getResourcePoiSnapshot;
+        _noteResourcesRequested = noteResourcesRequested;
+        _getPlayerBaseSnapshot = getPlayerBaseSnapshot;
+        _noteBasesRequested = noteBasesRequested;
+        _getMapTableSnapshot = getMapTableSnapshot;
+        _getWebPinStore = getWebPinStore;
+        _getActivityHeatmap = getActivityHeatmap;
+        _getLeaderboardStore = getLeaderboardStore;
+        _getTimelapseRecorder = getTimelapseRecorder;
+        _getEntitySnapshot = getEntitySnapshot;
+        _getEntityFocusSnapshot = getEntityFocusSnapshot;
+        _noteEntitiesRequested = noteEntitiesRequested;
+        _noteEntityFocusRequested = noteEntityFocusRequested;
+        _getDungeonSnapshot = getDungeonSnapshot;
+        _ensureDungeonsScanned = ensureDungeonsScanned;
+        _getDungeonId = getDungeonId;
+        _positionHistory = positionHistory;
+        _getFogMode = getFogMode;
+        _getEffectiveUpdateSeconds = getEffectiveUpdateSeconds;
+        _fogTracker = fogTracker;
+        _renderer = renderer;
+        _enqueueMapPing = enqueueMapPing;
+        _config = config;
+        _consoleBridge = consoleBridge;
+        _logRingBuffer = logRingBuffer;
+        _activityLog = activityLog;
+        _log = log;
+    }
+
+    public void Start()
+    {
+        if (_listener != null)
+        {
+            return;
+        }
+
+        string accessToken = AccessToken;
+        if (!_accessTokenWarningLogged && string.IsNullOrEmpty(accessToken))
+        {
+            _accessTokenWarningLogged = true;
+            _log.Warning(
+                "[LiveMap] AccessToken is empty — admin map view disabled until " +
+                "LiveMap.AccessToken is set; save your panel config to auto-generate one");
+        }
+
+        if (!_consoleTokenWarningLogged &&
+            _config.ConsoleEnabled &&
+            string.IsNullOrEmpty(accessToken))
+        {
+            _consoleTokenWarningLogged = true;
+            _log.Warning(
+                "[LiveMap] web console requires a non-empty AccessToken; console endpoints disabled");
+        }
+
+        string preferredHost = string.IsNullOrEmpty(_bindIp) ? "*" : FormatHost(_bindIp);
+        string preferredPrefix = $"http://{preferredHost}:{_port}/";
+        if (!TryStartListener(preferredPrefix, out HttpListener? listener, out Exception? failure))
+        {
+            if (!string.IsNullOrEmpty(_bindIp))
+            {
+                _log.Error($"[LiveMap] HTTP listener could not bind {preferredPrefix}: {failure}");
+                return;
+            }
+
+            string fallbackPrefix = $"http://127.0.0.1:{_port}/";
+            _log.Warning(
+                $"[LiveMap] HTTP listener could not bind {preferredPrefix} ({failure?.GetType().Name}); " +
+                $"falling back to {fallbackPrefix}.");
+            if (!TryStartListener(fallbackPrefix, out listener, out failure))
+            {
+                _log.Error($"[LiveMap] HTTP listener could not bind {fallbackPrefix}: {failure}");
+                return;
+            }
+
+            preferredPrefix = fallbackPrefix;
+        }
+
+        _listener = listener;
+        _listenerThread = new Thread(Listen)
+        {
+            IsBackground = true,
+            Name = "ValheimWorldMap.LiveMap.Http",
+        };
+        _listenerThread.Start();
+        _log.Info($"[LiveMap] listening on {preferredPrefix}");
+    }
+
+    public bool IsRunning => _listener?.IsListening == true;
+
+    public void Stop()
+    {
+        _stopping = true;
+        HttpListener? listener = _listener;
+        if (listener != null)
+        {
+            try
+            {
+                listener.Stop();
+                listener.Close();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The listener is already stopped.
+            }
+        }
+
+        Thread? thread = _listenerThread;
+        if (thread != null && thread.IsAlive && !ReferenceEquals(Thread.CurrentThread, thread))
+        {
+            thread.Join();
+        }
+
+        _listenerThread = null;
+        _listener = null;
+    }
+
+    private static bool TryStartListener(
+        string prefix,
+        out HttpListener? listener,
+        out Exception? failure)
+    {
+        listener = new HttpListener();
+        listener.Prefixes.Add(prefix);
+        try
+        {
+            listener.Start();
+            failure = null;
+            return true;
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+            try
+            {
+                listener.Close();
+            }
+            catch
+            {
+                // Preserve the original bind failure.
+            }
+
+            listener = null;
+            return false;
+        }
+    }
+
+    private void Listen()
+    {
+        HttpListener? listener = _listener;
+        if (listener == null)
+        {
+            return;
+        }
+
+        while (!_stopping && listener.IsListening)
+        {
+            try
+            {
+                HttpListenerContext context = listener.GetContext();
+                ThreadPool.QueueUserWorkItem(HandleRequest, context);
+            }
+            catch (HttpListenerException)
+            {
+                if (!_stopping)
+                {
+                    _log.Warning("[LiveMap] HTTP listener stopped accepting requests unexpectedly.");
+                }
+
+                break;
+            }
+            catch (ObjectDisposedException)
+            {
+                break;
+            }
+            catch (InvalidOperationException)
+            {
+                break;
+            }
+        }
+    }
+
+    private void HandleRequest(object? state)
+    {
+        var context = state as HttpListenerContext;
+        if (context == null)
+        {
+            return;
+        }
+
+        HttpListenerResponse response = context.Response;
+        response.KeepAlive = false;
+        try
+        {
+            HttpListenerRequest request = context.Request;
+            string path = request.Url?.AbsolutePath ?? "/";
+            bool isConsolePath = IsConsolePath(path);
+            ViewLevel viewLevel;
+            if (isConsolePath)
+            {
+                if (!HasConsoleToken(request))
+                {
+                    WriteJson(response, HttpStatusCode.Unauthorized, "{\"error\":\"unauthorized\"}");
+                    return;
+                }
+
+                bool isTowPath = string.Equals(path, "/api/admin/tow", StringComparison.Ordinal);
+                bool isChatPath = string.Equals(path, "/api/admin/chat", StringComparison.Ordinal);
+                if (_consoleBridge == null ||
+                    (!isChatPath &&
+                     !isTowPath &&
+                     (!_config.ConsoleEnabled || _logRingBuffer == null)))
+                {
+                    WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+                    return;
+                }
+
+                viewLevel = ViewLevel.Admin;
+            }
+            else if (path == "/api/catalog" &&
+                     string.Equals(request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase))
+            {
+                viewLevel = ViewLevel.Public;
+            }
+            else if (!TryResolveView(request, out viewLevel))
+            {
+                if (path == "/api/status" && _config.StatusPublic)
+                {
+                    viewLevel = ViewLevel.Public;
+                }
+                else
+                {
+                    WriteJson(response, HttpStatusCode.Unauthorized, "{\"error\":\"unauthorized\"}");
+                    return;
+                }
+            }
+
+            bool isGet = string.Equals(request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase);
+            bool isPost = string.Equals(request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase);
+            bool isPatch = string.Equals(request.HttpMethod, "PATCH", StringComparison.OrdinalIgnoreCase);
+            bool isDelete = string.Equals(request.HttpMethod, "DELETE", StringComparison.OrdinalIgnoreCase);
+            if (isGet && path == "/")
+            {
+                ServeIndex(response, viewLevel);
+            }
+            else if (isGet && path == "/api/embed")
+            {
+                ServeEmbed(response);
+            }
+            else if (isGet && path == "/favicon.ico")
+            {
+                ServeFavicon(response);
+            }
+            else if (isGet && path.StartsWith("/assets/", StringComparison.Ordinal))
+            {
+                ServeAsset(request, response, path.Substring("/assets/".Length));
+            }
+            else if (isGet && path == "/api/status")
+            {
+                ServeStatus(response, viewLevel);
+            }
+            else if (isGet && path == "/api/catalog")
+            {
+                ServeCatalog(request, response);
+            }
+            else if (isGet && path == "/api/players")
+            {
+                ServePlayers(response, viewLevel);
+            }
+            else if (isGet && path == "/api/dungeons")
+            {
+                ServeDungeons(response, viewLevel);
+            }
+            else if (isGet && TryGetDungeonPathId(path, out string dungeonId))
+            {
+                ServeDungeon(response, viewLevel, dungeonId);
+            }
+            else if (isGet && path == "/api/activity")
+            {
+                ServeActivity(request, response, viewLevel);
+            }
+            else if (isGet && path == "/api/trail")
+            {
+                ServeTrail(request, response, viewLevel);
+            }
+            else if (isGet && path == "/api/chat")
+            {
+                ServeChat(response, viewLevel);
+            }
+            else if (isGet && path == "/api/heatmap")
+            {
+                ServeHeatmap(request, response, viewLevel);
+            }
+            else if (isGet && path == "/api/leaderboard")
+            {
+                ServeLeaderboard(response, viewLevel);
+            }
+            else if (isGet && path == "/api/timelapse")
+            {
+                ServeTimelapseIndex(request, response, viewLevel);
+            }
+            else if (isGet && path == "/api/timelapse/frame")
+            {
+                ServeTimelapseFrame(request, response, viewLevel);
+            }
+            else if (isGet && path == "/api/height")
+            {
+                ServeHeight(request, response);
+            }
+            else if (isPost && path == "/api/ping")
+            {
+                ServePing(request, response, viewLevel);
+            }
+            else if (isGet && path == "/api/entities")
+            {
+                ServeEntities(request, response, viewLevel);
+            }
+            else if (isGet && path == "/api/events")
+            {
+                ServeEvents(request, response, viewLevel);
+            }
+            else if (isGet && path == "/api/pois")
+            {
+                ServePois(request, response, viewLevel);
+            }
+            else if (isGet && path == "/api/regions")
+            {
+                ServeRegions(request, response, viewLevel);
+            }
+            else if (isGet && path == "/api/pins")
+            {
+                ServePins(response, viewLevel);
+            }
+            else if (isGet && path == "/api/webpins")
+            {
+                ServeWebPins(response, viewLevel);
+            }
+            else if (isPost && path == "/api/webpins")
+            {
+                ServeCreateWebPin(request, response, viewLevel);
+            }
+            else if (isPatch && TryGetWebPinId(path, out string updateWebPinId))
+            {
+                ServeUpdateWebPin(request, response, viewLevel, updateWebPinId);
+            }
+            else if (isDelete && TryGetWebPinId(path, out string deleteWebPinId))
+            {
+                ServeDeleteWebPin(request, response, viewLevel, deleteWebPinId);
+            }
+            else if (isGet && path.StartsWith("/tiles/", StringComparison.Ordinal))
+            {
+                ServeTile(request, response, path.Substring("/tiles/".Length));
+            }
+            else if (isGet && path == "/base.png")
+            {
+                ServeBaseImage(request, response);
+            }
+            else if (isGet && path == "/fog.png")
+            {
+                ServeFogImage(request, response, viewLevel);
+            }
+            else if (isPost && path == "/api/console/exec")
+            {
+                ServeConsoleExec(request, response);
+            }
+            else if (isGet && path == "/api/console/log")
+            {
+                ServeConsoleLog(request, response);
+            }
+            else if (isGet && path == "/api/console/history")
+            {
+                ServeConsoleHistory(request, response);
+            }
+            else if (isGet && path == "/api/console/meta")
+            {
+                ServeConsoleMeta(response);
+            }
+            else if (isPost && path == "/api/admin/kick")
+            {
+                ServeAdminAction(request, response, "kick", _consoleBridge!.Kick);
+            }
+            else if (isPost && path == "/api/admin/ban")
+            {
+                ServeAdminAction(request, response, "ban", _consoleBridge!.Ban);
+            }
+            else if (isPost && path == "/api/admin/unban")
+            {
+                ServeAdminAction(request, response, "unban", _consoleBridge!.Unban);
+            }
+            else if (isGet && path == "/api/admin/banlist")
+            {
+                ServeBanList(response);
+            }
+            else if (isPost && path == "/api/admin/chat")
+            {
+                ServeAdminChat(request, response);
+            }
+            else if (isPost && path == "/api/admin/save")
+            {
+                ServeSave(request, response);
+            }
+            else if (isPost && path == "/api/admin/shutdown")
+            {
+                ServeShutdown(request, response);
+            }
+            else if (isPost && path == "/api/admin/tow")
+            {
+                ServeTow(request, response);
+            }
+            else if (isGet && path == "/api/stats")
+            {
+                ServeStats(response);
+            }
+            else
+            {
+                WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            }
+        }
+        catch (HttpListenerException)
+        {
+            // Client disconnects are routine on Mono's managed listener.
+        }
+        catch (IOException)
+        {
+            // Client disconnects are routine on Mono's managed listener.
+        }
+        catch (ObjectDisposedException)
+        {
+            // The server is stopping.
+        }
+        catch (Exception exception)
+        {
+            _log.Warning($"[LiveMap] HTTP request failed: {exception.GetType().Name}: {exception.Message}");
+            TryWriteJson(response, HttpStatusCode.InternalServerError, "{\"error\":\"internal server error\"}");
+        }
+    }
+
+    private bool TryResolveView(HttpListenerRequest request, out ViewLevel viewLevel)
+    {
+        string queryToken = request.QueryString["token"] ?? string.Empty;
+        string headerToken = request.Headers["X-LiveMap-Token"] ?? string.Empty;
+        string accessToken = AccessToken;
+        if (!string.IsNullOrEmpty(accessToken))
+        {
+            bool isAdmin = FixedTimeEquals(accessToken, queryToken);
+            isAdmin |= FixedTimeEquals(accessToken, headerToken);
+            if (isAdmin)
+            {
+                viewLevel = ViewLevel.Admin;
+                return true;
+            }
+        }
+
+        string shareToken = ShareToken;
+        if (!string.IsNullOrEmpty(shareToken))
+        {
+            bool isShared = FixedTimeEquals(shareToken, queryToken);
+            isShared |= FixedTimeEquals(shareToken, headerToken);
+            if (isShared)
+            {
+                viewLevel = ViewLevel.Shared;
+                return true;
+            }
+        }
+
+        viewLevel = ViewLevel.Public;
+        return _publicView;
+    }
+
+    private static bool TryGetDungeonPathId(string path, out string dungeonId)
+    {
+        const string prefix = "/api/dungeons/";
+        dungeonId = string.Empty;
+        if (!path.StartsWith(prefix, StringComparison.Ordinal) ||
+            path.Length == prefix.Length)
+        {
+            return false;
+        }
+
+        string escapedId = path.Substring(prefix.Length);
+        if (escapedId.IndexOf('/') >= 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            dungeonId = Uri.UnescapeDataString(escapedId);
+        }
+        catch (UriFormatException)
+        {
+            return false;
+        }
+
+        return dungeonId.Length > 0 && dungeonId.IndexOf('/') < 0;
+    }
+
+    private bool HasConsoleToken(HttpListenerRequest request)
+    {
+        string accessToken = AccessToken;
+        if (string.IsNullOrEmpty(accessToken))
+        {
+            return false;
+        }
+
+        string queryToken = request.QueryString["token"] ?? string.Empty;
+        string headerToken = request.Headers["X-LiveMap-Token"] ?? string.Empty;
+        bool matches = FixedTimeEquals(accessToken, queryToken);
+        matches |= FixedTimeEquals(accessToken, headerToken);
+        return matches;
+    }
+
+    private static bool IsConsolePath(string path)
+    {
+        return path.StartsWith("/api/console/", StringComparison.Ordinal) ||
+               path.StartsWith("/api/admin/", StringComparison.Ordinal) ||
+               path == "/api/stats";
+    }
+
+    private static void ReadAuditIdentity(
+        HttpListenerRequest request,
+        out string operatorName,
+        out string source)
+    {
+        string? header = request.Headers["X-Operator"];
+        operatorName = header ?? string.Empty;
+        source = header == null ? "token" : "panel";
+    }
+
+    private void ServeIndex(HttpListenerResponse response, ViewLevel viewLevel)
+    {
+        string html = Encoding.UTF8.GetString(EmbeddedAssets.Get("index.html"));
+        string token = viewLevel == ViewLevel.Admin
+            ? AccessToken
+            : viewLevel == ViewLevel.Shared ? ShareToken : string.Empty;
+        // Keep cached scripts and styles tied to the release that serves this page.
+        // Otherwise a returning viewer can retain an older interface after upgrading.
+        string tokenQuery = "?v=" + Uri.EscapeDataString(ValheimWorldMapPlugin.PluginVersion);
+        if (!string.IsNullOrEmpty(token))
+        {
+            tokenQuery += "&token=" + Uri.EscapeDataString(token);
+        }
+        html = html.Replace("{{TOKEN_QUERY}}", tokenQuery);
+        html = html.Replace("{{TOKEN_VALUE}}", HtmlAttributeEncode(token));
+        WriteBytes(
+            response,
+            HttpStatusCode.OK,
+            "text/html; charset=utf-8",
+            Encoding.UTF8.GetBytes(html),
+            "no-store");
+    }
+
+    private static void ServeEmbed(HttpListenerResponse response)
+    {
+        WriteBytes(
+            response,
+            HttpStatusCode.OK,
+            "text/html; charset=utf-8",
+            EmbeddedAssets.Get("embed.html"),
+            "no-store");
+    }
+
+    private void ServeAsset(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        string name)
+    {
+        string? assetName;
+        string? contentType;
+        switch (name)
+        {
+            case "leaflet.js":
+                assetName = "leaflet.js";
+                contentType = "application/javascript; charset=utf-8";
+                break;
+            case "leaflet.css":
+                assetName = "leaflet.css";
+                contentType = "text/css; charset=utf-8";
+                break;
+            case "app.js":
+                assetName = "app.js";
+                contentType = "application/javascript; charset=utf-8";
+                break;
+            case "app.embed.js":
+                assetName = "app.embed.js";
+                contentType = "application/javascript; charset=utf-8";
+                break;
+            case "icons.js":
+                assetName = "icons.js";
+                contentType = "application/javascript; charset=utf-8";
+                break;
+            case "app.css":
+                assetName = "app.css";
+                contentType = "text/css; charset=utf-8";
+                break;
+            case "app.embed.css":
+                assetName = "app.embed.css";
+                contentType = "text/css; charset=utf-8";
+                break;
+            case "icon-192.png":
+                assetName = "icon-192.png";
+                contentType = "image/png";
+                break;
+            case "icon-64.png":
+                assetName = "icon-64.png";
+                contentType = "image/png";
+                break;
+            case "metamorphous-v22-latin-regular.woff2":
+                assetName = "metamorphous-v22-latin-regular.woff2";
+                contentType = "font/woff2";
+                break;
+            case "averia-serif-libre-v19-latin-regular.woff2":
+                assetName = "averia-serif-libre-v19-latin-regular.woff2";
+                contentType = "font/woff2";
+                break;
+            case "averia-serif-libre-v19-latin-italic.woff2":
+                assetName = "averia-serif-libre-v19-latin-italic.woff2";
+                contentType = "font/woff2";
+                break;
+            case "averia-serif-libre-v19-latin-700.woff2":
+                assetName = "averia-serif-libre-v19-latin-700.woff2";
+                contentType = "font/woff2";
+                break;
+            case "averia-serif-libre-v19-latin-700italic.woff2":
+                assetName = "averia-serif-libre-v19-latin-700italic.woff2";
+                contentType = "font/woff2";
+                break;
+            case "OFL-Metamorphous.txt":
+                assetName = "OFL-Metamorphous.txt";
+                contentType = "text/plain; charset=utf-8";
+                break;
+            case "OFL-AveriaSerifLibre.txt":
+                assetName = "OFL-AveriaSerifLibre.txt";
+                contentType = "text/plain; charset=utf-8";
+                break;
+            default:
+                assetName = null;
+                contentType = null;
+                break;
+        }
+
+        if (assetName == null || contentType == null)
+        {
+            WriteBytes(response, HttpStatusCode.NotFound, "text/plain", Array.Empty<byte>(), "no-store");
+            return;
+        }
+
+        byte[] content = EmbeddedAssets.Get(assetName);
+        byte[]? gzipContent = IsGzipContentType(contentType)
+            ? EmbeddedAssets.GetGzip(assetName)
+            : null;
+        WriteCacheableBytes(
+            request,
+            response,
+            contentType,
+            content,
+            gzipContent,
+            EmbeddedAssets.GetETag(assetName),
+            "public, max-age=3600");
+    }
+
+    private void ServeFavicon(HttpListenerResponse response)
+    {
+        WriteBytes(
+            response,
+            HttpStatusCode.OK,
+            "image/x-icon",
+            EmbeddedAssets.Get("favicon.ico"),
+            "public, max-age=3600");
+    }
+
+    private void ServeStatus(HttpListenerResponse response, ViewLevel viewLevel)
+    {
+        LiveMapSnapshot snapshot = _getSnapshot();
+        string json = BuildStatusJson(snapshot, viewLevel, out _);
+        WriteJson(response, HttpStatusCode.OK, json);
+    }
+
+    private void ServeCatalog(
+        HttpListenerRequest request,
+        HttpListenerResponse response)
+    {
+        WriteCacheableBytes(
+            request,
+            response,
+            "application/json; charset=utf-8",
+            _itemCatalog.Content,
+            _itemCatalog.GzipContent,
+            _itemCatalog.ETag,
+            "public, max-age=86400");
+    }
+
+    private static void WriteCacheableBytes(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        string contentType,
+        byte[] content,
+        byte[]? gzipContent,
+        string etag,
+        string cacheControl)
+    {
+        response.Headers[HttpResponseHeader.ETag] = etag;
+        if (gzipContent != null)
+        {
+            response.Headers[HttpResponseHeader.Vary] = "Accept-Encoding";
+        }
+
+        if (MatchesETag(request.Headers["If-None-Match"], etag))
+        {
+            response.StatusCode = (int)HttpStatusCode.NotModified;
+            response.Headers[HttpResponseHeader.CacheControl] = cacheControl;
+            response.ContentLength64 = 0;
+            response.OutputStream.Close();
+            return;
+        }
+
+        byte[] responseContent = content;
+        if (gzipContent != null && AcceptsGzip(request))
+        {
+            response.Headers[HttpResponseHeader.ContentEncoding] = "gzip";
+            responseContent = gzipContent;
+        }
+
+        WriteBytes(
+            response,
+            HttpStatusCode.OK,
+            contentType,
+            responseContent,
+            cacheControl);
+    }
+
+    private static bool AcceptsGzip(HttpListenerRequest request)
+    {
+        string? acceptEncoding = request.Headers["Accept-Encoding"];
+        return acceptEncoding != null &&
+               acceptEncoding.IndexOf("gzip", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static bool IsGzipContentType(string contentType)
+    {
+        return contentType.StartsWith("application/javascript", StringComparison.OrdinalIgnoreCase) ||
+               contentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase) ||
+               contentType.StartsWith("image/svg+xml", StringComparison.OrdinalIgnoreCase) ||
+               contentType.StartsWith("text/css", StringComparison.OrdinalIgnoreCase) ||
+               contentType.StartsWith("text/html", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool MatchesETag(string? header, string etag)
+    {
+        if (string.IsNullOrWhiteSpace(header))
+        {
+            return false;
+        }
+
+        string[] candidates = header!.Split(',');
+        for (int index = 0; index < candidates.Length; index++)
+        {
+            string candidate = candidates[index].Trim();
+            if (string.Equals(candidate, "*", StringComparison.Ordinal) ||
+                string.Equals(candidate, etag, StringComparison.Ordinal) ||
+                (candidate.StartsWith("W/", StringComparison.Ordinal) &&
+                 string.Equals(candidate.Substring(2), etag, StringComparison.Ordinal)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private string BuildStatusJson(
+        LiveMapSnapshot snapshot,
+        ViewLevel viewLevel,
+        out string changeKey)
+    {
+        bool seesAllPlayers = SeesAllPlayers(viewLevel);
+        int visiblePlayers = 0;
+        for (int index = 0; index < snapshot.Players.Length; index++)
+        {
+            if (seesAllPlayers || snapshot.Players[index].IsPublic)
+            {
+                visiblePlayers++;
+            }
+        }
+
+        bool consoleAvailable = viewLevel == ViewLevel.Admin &&
+                                _config.ConsoleEnabled &&
+                                !string.IsNullOrEmpty(AccessToken) &&
+                                _consoleBridge != null;
+        bool hasSharedMapAccess = viewLevel != ViewLevel.Public;
+        bool chatAvailable = ChatAvailable(viewLevel);
+        bool leaderboardAvailable = LeaderboardAvailable(viewLevel);
+        bool eventsAvailable = EventsAvailable(viewLevel);
+        bool entitiesAvailable = EntitiesAvailable(viewLevel);
+        string mapState = _renderer.StateName;
+        string mapProgress = JsonWriter.Number(_renderer.Progress);
+        string renderRevision = _renderer.RenderRevision;
+        string topoState = _renderer.GetStyleStateName(MapStyle.Topo);
+        string topoProgress = JsonWriter.Number(_renderer.GetStyleProgress(MapStyle.Topo));
+        string topoRevision = _renderer.GetStyleRevision(MapStyle.Topo);
+        string chartState = _renderer.GetStyleStateName(MapStyle.Chart);
+        string chartProgress = JsonWriter.Number(_renderer.GetStyleProgress(MapStyle.Chart));
+        string chartRevision = _renderer.GetStyleRevision(MapStyle.Chart);
+        string fogMode = GetEffectiveFogMode(viewLevel);
+        bool fogHide = GetEffectiveFogHide(viewLevel) ||
+                       (viewLevel == ViewLevel.Admin && fogMode != "off");
+        FogMaskSnapshot fogSnapshot = _fogTracker.Snapshot;
+        long fogRevision = fogMode == "off" ? 0 : fogSnapshot.Revision;
+        double exploredPct = GetExploredPercentage(fogSnapshot);
+        EntityMapSnapshot entitySnapshot = _getEntitySnapshot();
+        RaidEventSnapshot? activeEvent = eventsAvailable
+            ? entitySnapshot.Event
+            : null;
+        long snapshotAgeMs = snapshot.UnixMs == 0
+            ? 0
+            : Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - snapshot.UnixMs);
+        bool snapshotStale = snapshot.UnixMs != 0 &&
+                             snapshotAgeMs > Math.Max(0.25f, _getEffectiveUpdateSeconds()) * 3000.0;
+        long lastSavedUnixMs = WorldSavePatch.LastSavedUnixMs;
+        double uptimeSeconds = _consoleBridge?.Stats.UptimeSeconds ?? 0d;
+        string globalKeysChangeKey = JoinSortedStrings(snapshot.GlobalKeys);
+        string modifiersChangeKey = JoinSortedStrings(snapshot.Modifiers);
+        var json = new StringBuilder(640);
+        json.Append('{');
+        json.Append("\"serverName\":").Append(JsonWriter.Quote(snapshot.ServerName));
+        json.Append(",\"worldName\":").Append(JsonWriter.Quote(snapshot.WorldName));
+        if (viewLevel == ViewLevel.Admin && !string.IsNullOrEmpty(snapshot.JoinCode))
+        {
+            json.Append(",\"joinCode\":").Append(JsonWriter.Quote(snapshot.JoinCode));
+        }
+
+        json.Append(",\"pluginVersion\":").Append(JsonWriter.Quote(ValheimWorldMapPlugin.PluginVersion));
+        json.Append(",\"day\":").Append(snapshot.Day.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"uptimeSeconds\":").Append(JsonWriter.Number(uptimeSeconds));
+        json.Append(",\"timeOfDay\":").Append(JsonWriter.Number(snapshot.TimeOfDay));
+        json.Append(",\"windDirDeg\":").Append(JsonWriter.Number(Math.Round(snapshot.WindDirDeg, 1)));
+        json.Append(",\"windIntensity\":").Append(JsonWriter.Number(Math.Round(snapshot.WindIntensity, 3)));
+        json.Append(",\"globalKeys\":");
+        AppendStringArray(json, snapshot.GlobalKeys);
+        json.Append(",\"modifiers\":");
+        AppendStringArray(json, snapshot.Modifiers);
+        json.Append(",\"exploredPct\":").Append(JsonWriter.Number(Math.Round(exploredPct, 1)));
+        json.Append(",\"players\":").Append(visiblePlayers.ToString(CultureInfo.InvariantCulture));
+        int maxPlayers = ValheimWorldMap.Modules.ServerHostModule.EffectiveMaxPlayers();
+        json.Append(",\"maxPlayers\":").Append(maxPlayers.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"view\":").Append(JsonWriter.Quote(
+            viewLevel == ViewLevel.Admin
+                ? "admin"
+                : viewLevel == ViewLevel.Shared ? "shared" : "public"));
+        json.Append(",\"console\":").Append(consoleAvailable ? "true" : "false");
+        json.Append(",\"chat\":").Append(chatAvailable ? "true" : "false");
+        json.Append(",\"leaderboard\":").Append(leaderboardAvailable ? "true" : "false");
+        json.Append(",\"dungeonInteriors\":").Append(
+            DungeonInteriorsAvailable(viewLevel) ? "true" : "false");
+        json.Append(",\"entities\":").Append(entitiesAvailable ? "true" : "false");
+        if (eventsAvailable)
+        {
+            json.Append(",\"event\":");
+            AppendRaidEventJson(json, activeEvent);
+        }
+
+        json.Append(",\"map\":{");
+        json.Append("\"state\":").Append(JsonWriter.Quote(mapState));
+        json.Append(",\"progress\":").Append(mapProgress);
+        json.Append(",\"renderRevision\":").Append(JsonWriter.Quote(renderRevision));
+        json.Append(",\"textureSize\":").Append(_renderer.TextureSize.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"pixelSize\":").Append(JsonWriter.Number(WorldMapRenderer.PixelSize));
+        json.Append(",\"worldRadius\":").Append(WorldMapRenderer.WorldRadius.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"baseZoom\":").Append(_renderer.BaseMaximumZoom.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"maxZoom\":").Append(_renderer.MaximumZoom.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"styles\":{");
+        json.Append("\"topo\":{");
+        json.Append("\"state\":").Append(JsonWriter.Quote(topoState));
+        json.Append(",\"progress\":").Append(topoProgress);
+        json.Append(",\"revision\":").Append(JsonWriter.Quote(topoRevision));
+        json.Append("},\"chart\":{");
+        json.Append("\"state\":").Append(JsonWriter.Quote(chartState));
+        json.Append(",\"progress\":").Append(chartProgress);
+        json.Append(",\"revision\":").Append(JsonWriter.Quote(chartRevision));
+        json.Append("}}");
+        json.Append(",\"fog\":{");
+        json.Append("\"mode\":").Append(JsonWriter.Quote(fogMode));
+        json.Append(",\"revision\":").Append(fogRevision.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"size\":").Append(FogTracker.Size.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"worldSpan\":").Append(FogTracker.WorldSpan.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"hide\":").Append(fogHide ? "true" : "false");
+        json.Append(",\"locked\":").Append(fogHide && viewLevel != ViewLevel.Admin ? "true" : "false");
+        json.Append(",\"poiPolicy\":").Append(JsonWriter.Quote(GetPoiPolicy(viewLevel)));
+        json.Append("}}");
+        json.Append(",\"unixMs\":").Append(snapshot.UnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"snapshotAgeMs\":").Append(snapshotAgeMs.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"lastSavedUnixMs\":").Append(
+            lastSavedUnixMs.ToString(CultureInfo.InvariantCulture));
+        if (snapshotStale)
+        {
+            json.Append(",\"stale\":true");
+        }
+
+        json.Append('}');
+
+        var key = new StringBuilder(96);
+        key.Append(snapshot.Day.ToString(CultureInfo.InvariantCulture)).Append('|');
+        key.Append(JsonWriter.Number(Math.Round(snapshot.TimeOfDay, 3))).Append('|');
+        double roundedWindDir = (Math.Round(snapshot.WindDirDeg / 5.0) * 5.0) % 360.0;
+        key.Append(JsonWriter.Number(roundedWindDir)).Append('|');
+        double roundedWindIntensity = Math.Round(snapshot.WindIntensity / 0.05) * 0.05;
+        key.Append(JsonWriter.Number(roundedWindIntensity)).Append('|');
+        key.Append(globalKeysChangeKey).Append('|');
+        key.Append(modifiersChangeKey).Append('|');
+        key.Append(JsonWriter.Number(Math.Round(exploredPct, 1))).Append('|');
+        key.Append(visiblePlayers.ToString(CultureInfo.InvariantCulture)).Append('|');
+        key.Append(maxPlayers.ToString(CultureInfo.InvariantCulture)).Append('|');
+        key.Append(mapState).Append('|');
+        key.Append(mapProgress).Append('|');
+        key.Append(renderRevision).Append('|');
+        key.Append(topoState).Append('|');
+        key.Append(topoProgress).Append('|');
+        key.Append(topoRevision).Append('|');
+        key.Append(chartState).Append('|');
+        key.Append(chartProgress).Append('|');
+        key.Append(chartRevision).Append('|');
+        key.Append(fogRevision.ToString(CultureInfo.InvariantCulture)).Append('|');
+        key.Append(fogHide ? "hide" : "ghost").Append('|');
+        key.Append(fogMode).Append('|');
+        key.Append(GetPoiPolicy(viewLevel)).Append('|');
+        long lastSavedMinute = lastSavedUnixMs > 0L ? lastSavedUnixMs / 60000L : 0L;
+        key.Append(lastSavedMinute.ToString(CultureInfo.InvariantCulture)).Append('|');
+        key.Append(snapshotStale ? "stale" : "fresh");
+        if (viewLevel == ViewLevel.Admin)
+        {
+            key.Append('|').Append(snapshot.JoinCode);
+        }
+
+        key.Append('|').Append(chatAvailable ? "chat" : "no-chat");
+        key.Append('|').Append(leaderboardAvailable ? "leaderboard" : "no-leaderboard");
+        if (hasSharedMapAccess || entitiesAvailable)
+        {
+            key.Append('|').Append(entitiesAvailable ? "entities" : "no-entities");
+        }
+
+        if (eventsAvailable)
+        {
+            key.Append('|');
+            if (activeEvent == null)
+            {
+                key.Append("no-event");
+            }
+            else
+            {
+                key.Append(activeEvent.Name).Append('|');
+                key.Append(JsonWriter.Number(Math.Round(activeEvent.Elapsed)));
+            }
+        }
+
+        changeKey = key.ToString();
+        return json.ToString();
+    }
+
+    private static void AppendStringArray(StringBuilder json, string[] values)
+    {
+        json.Append('[');
+        for (int index = 0; index < values.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            json.Append(JsonWriter.Quote(values[index]));
+        }
+
+        json.Append(']');
+    }
+
+    private static string JoinSortedStrings(string[] values)
+    {
+        string[] sorted = (string[])values.Clone();
+        Array.Sort(sorted, StringComparer.Ordinal);
+        return string.Join(",", sorted);
+    }
+
+    private void ServeEvents(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        ViewLevel viewLevel)
+    {
+        int streamCount = Interlocked.Increment(ref _eventStreamCount);
+        try
+        {
+            if (streamCount > MaximumEventStreams)
+            {
+                WriteJson(
+                    response,
+                    HttpStatusCode.Conflict,
+                    "{\"error\":\"too many event streams\"}");
+                return;
+            }
+
+            bool sendLogs = viewLevel == ViewLevel.Admin &&
+                            _config.ConsoleEnabled &&
+                            HasConsoleToken(request) &&
+                            _consoleBridge != null &&
+                            _logRingBuffer != null;
+
+            response.StatusCode = (int)HttpStatusCode.OK;
+            response.ContentType = "text/event-stream";
+            response.Headers[HttpResponseHeader.CacheControl] = "no-store";
+            response.SendChunked = true;
+            response.KeepAlive = true;
+
+            Stream output = response.OutputStream;
+            long pingCursor = MapPingPatch.LatestCursor;
+            var pendingPings = new List<MapPingSnapshot>(16);
+            bool sendChat = ChatAvailable(viewLevel);
+            long chatCursor = sendChat ? MapPingPatch.LatestChatCursor : 0L;
+            var pendingChats = new List<MapChatSnapshot>(ChatHistoryStore.Capacity);
+            bool sendActivity = viewLevel != ViewLevel.Public;
+            long activityCursor = _activityLog.LatestActivityCursor;
+            var pendingActivity = new List<ActivityFeedEntry>(EventStreamActivityBatchSize);
+            WriteEventStreamText(output, "retry: 5000\n\n");
+
+            LiveMapSnapshot snapshot = _getSnapshot();
+            LiveMapSnapshot lastPlayerSnapshot = snapshot;
+            WriteEventStreamEvent(output, "players", BuildPlayersJson(snapshot, viewLevel));
+
+            string statusJson = BuildStatusJson(snapshot, viewLevel, out string statusChangeKey);
+            WriteEventStreamEvent(output, "status", statusJson);
+
+            bool sendWebPins = CanReadWebPins(viewLevel);
+            long webPinRevision = -1L;
+            if (sendWebPins)
+            {
+                webPinRevision = _getWebPinStore()?.Revision ?? 0L;
+                WriteEventStreamEvent(
+                    output,
+                    "webpins",
+                    BuildWebPinRevisionJson(webPinRevision));
+            }
+
+            long logCursor = 0L;
+            if (sendLogs)
+            {
+                string logJson = BuildConsoleLogJson(
+                    logCursor,
+                    EventStreamLogBatchSize,
+                    out logCursor,
+                    out _);
+                WriteEventStreamEvent(output, "log", logJson);
+            }
+
+            int idleTicks = 0;
+            while (!_stopping)
+            {
+                Thread.Sleep(EventStreamTickMilliseconds);
+                if (_stopping)
+                {
+                    break;
+                }
+
+                bool sentEvent = false;
+                snapshot = _getSnapshot();
+                if (!ReferenceEquals(snapshot, lastPlayerSnapshot))
+                {
+                    WriteEventStreamEvent(output, "players", BuildPlayersJson(snapshot, viewLevel));
+                    lastPlayerSnapshot = snapshot;
+                    sentEvent = true;
+                }
+
+                statusJson = BuildStatusJson(snapshot, viewLevel, out string nextStatusChangeKey);
+                if (!string.Equals(statusChangeKey, nextStatusChangeKey, StringComparison.Ordinal))
+                {
+                    WriteEventStreamEvent(output, "status", statusJson);
+                    statusChangeKey = nextStatusChangeKey;
+                    sentEvent = true;
+                }
+
+                bool nextSendWebPins = CanReadWebPins(viewLevel);
+                if (nextSendWebPins)
+                {
+                    long nextWebPinRevision = _getWebPinStore()?.Revision ?? 0L;
+                    if (!sendWebPins || nextWebPinRevision != webPinRevision)
+                    {
+                        WriteEventStreamEvent(
+                            output,
+                            "webpins",
+                            BuildWebPinRevisionJson(nextWebPinRevision));
+                        webPinRevision = nextWebPinRevision;
+                        sentEvent = true;
+                    }
+                }
+
+                sendWebPins = nextSendWebPins;
+
+                pingCursor = MapPingPatch.CopyAfter(pingCursor, pendingPings);
+                for (int index = 0; index < pendingPings.Count; index++)
+                {
+                    WriteEventStreamEvent(output, "ping", BuildPingJson(pendingPings[index]));
+                    sentEvent = true;
+                }
+
+                // PublicChat can be switched off while a stream is open, so check it every tick.
+                sendChat = UpdateChatStream(
+                    sendChat,
+                    ChatAvailable(viewLevel),
+                    () => MapPingPatch.LatestChatCursor,
+                    ref chatCursor);
+                if (sendChat)
+                {
+                    chatCursor = MapPingPatch.CopyChatAfter(chatCursor, pendingChats);
+                    if (pendingChats.Count > 0)
+                    {
+                        HashSet<string>? senders = GetVisibleChatSenders(viewLevel);
+                        for (int index = 0; index < pendingChats.Count; index++)
+                        {
+                            WriteEventStreamEvent(
+                                output,
+                                "chat",
+                                BuildChatJson(pendingChats[index], viewLevel, senders));
+                            sentEvent = true;
+                        }
+                    }
+                }
+
+                if (sendActivity && _activityLog.ActivityFeedEnabled)
+                {
+                    string activityJson = BuildActivityJson(
+                        activityCursor,
+                        EventStreamActivityBatchSize,
+                        pendingActivity,
+                        false,
+                        out long nextActivityCursor,
+                        out int activityCount);
+                    if (activityCount > 0)
+                    {
+                        WriteEventStreamEvent(output, "activity", activityJson);
+                        activityCursor = nextActivityCursor;
+                        sentEvent = true;
+                    }
+                }
+
+                if (sendLogs)
+                {
+                    string logJson = BuildConsoleLogJson(
+                        logCursor,
+                        EventStreamLogBatchSize,
+                        out long nextLogCursor,
+                        out int logLineCount);
+                    if (logLineCount > 0)
+                    {
+                        WriteEventStreamEvent(output, "log", logJson);
+                        logCursor = nextLogCursor;
+                        sentEvent = true;
+                    }
+                }
+
+                if (sentEvent)
+                {
+                    idleTicks = 0;
+                }
+                else if (++idleTicks >= EventStreamHeartbeatTicks)
+                {
+                    WriteEventStreamText(output, ": ping\n\n");
+                    idleTicks = 0;
+                }
+            }
+        }
+        catch (HttpListenerException)
+        {
+            // The event-stream client disconnected.
+        }
+        catch (IOException)
+        {
+            // The event-stream client disconnected.
+        }
+        catch (ObjectDisposedException)
+        {
+            // The event-stream client disconnected or the server is stopping.
+        }
+        catch (InvalidOperationException)
+        {
+            // The event-stream response is no longer writable.
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _eventStreamCount);
+            TryCloseEventStream(response);
+        }
+    }
+
+    private void ServeConsoleExec(HttpListenerRequest request, HttpListenerResponse response)
+    {
+        ReadAuditIdentity(request, out string operatorName, out string source);
+        if (!TryReadRequiredString(request, response, "command", "command is required", out string line))
+        {
+            _activityLog.RecordAdminCommand(
+                operatorName,
+                string.Empty,
+                "error",
+                "command is required",
+                source,
+                string.Empty,
+                appendHistory: false);
+            return;
+        }
+
+        int separator = FindWhitespace(line);
+        string commandName = separator < 0
+            ? line.ToLowerInvariant()
+            : line.Substring(0, separator).ToLowerInvariant();
+        if (!_config.AllowAllCommands &&
+            !string.Equals(commandName, "vwm", StringComparison.Ordinal) &&
+            !_config.ConsoleWhitelist.Contains(commandName))
+        {
+            const string error = "command not whitelisted";
+            _activityLog.RecordAdminCommand(
+                operatorName,
+                line,
+                "error",
+                error,
+                source,
+                error,
+                appendHistory: false);
+            WriteJson(
+                response,
+                HttpStatusCode.Forbidden,
+                "{\"ok\":false,\"error\":\"command not whitelisted\"}");
+            return;
+        }
+
+        ConsoleExecResult result = _consoleBridge!.ExecuteCommand(line);
+        if (!result.Ok)
+        {
+            _activityLog.RecordAdminCommand(
+                operatorName,
+                line,
+                "error",
+                result.Error,
+                source,
+                result.Error,
+                appendHistory: true);
+            HttpStatusCode status = string.Equals(
+                result.Error,
+                "unknown command",
+                StringComparison.Ordinal)
+                ? HttpStatusCode.BadRequest
+                : HttpStatusCode.OK;
+            WriteJson(
+                response,
+                status,
+                "{\"ok\":false,\"error\":" + JsonWriter.Quote(result.Error) + "}");
+            return;
+        }
+
+        _activityLog.RecordAdminCommand(
+            operatorName,
+            line,
+            "ok",
+            "completed",
+            source,
+            string.Join("\n", result.Output),
+            appendHistory: true);
+
+        var json = new StringBuilder(32 + (result.Output.Count * 64));
+        json.Append("{\"ok\":true,\"output\":[");
+        for (int index = 0; index < result.Output.Count; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            json.Append(JsonWriter.Quote(result.Output[index]));
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServeConsoleLog(HttpListenerRequest request, HttpListenerResponse response)
+    {
+        long cursor = ParseLong(request.QueryString["cursor"], 0L);
+        long requestedMaximum = ParseLong(request.QueryString["max"], 200L);
+        int maximum = (int)Math.Max(1L, Math.Min(500L, requestedMaximum));
+        string json = BuildConsoleLogJson(cursor, maximum, out _, out _);
+        WriteJson(response, HttpStatusCode.OK, json);
+    }
+
+    private void ServeConsoleHistory(HttpListenerRequest request, HttpListenerResponse response)
+    {
+        long cursor = ParseLong(request.QueryString["cursor"], 0L);
+        long requestedMaximum = ParseLong(request.QueryString["max"], 200L);
+        int maximum = (int)Math.Max(1L, Math.Min(200L, requestedMaximum));
+        var entries = new List<ConsoleHistoryEntry>(maximum);
+        long latestCursor = _activityLog.CopyConsoleHistoryAfter(cursor, maximum, entries);
+        var json = new StringBuilder(32 + (entries.Count * 192));
+        json.Append("{\"cursor\":");
+        json.Append(latestCursor.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"entries\":[");
+        for (int index = 0; index < entries.Count; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            ConsoleHistoryEntry entry = entries[index];
+            json.Append('{');
+            json.Append("\"id\":").Append(entry.Id.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"operator\":").Append(JsonWriter.Quote(entry.Operator));
+            json.Append(",\"command\":").Append(JsonWriter.Quote(entry.Command));
+            json.Append(",\"output\":").Append(JsonWriter.Quote(entry.Output));
+            json.Append(",\"t\":").Append(entry.UnixMs.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"status\":").Append(JsonWriter.Quote(entry.Status));
+            json.Append('}');
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServeActivity(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        ViewLevel viewLevel)
+    {
+        if (viewLevel == ViewLevel.Public)
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        long cursor = Math.Max(0L, ParseLong(request.QueryString["cursor"], 0L));
+        bool oldestFirst = string.Equals(
+            request.QueryString["order"],
+            "asc",
+            StringComparison.Ordinal);
+        var entries = new List<ActivityFeedEntry>(EventStreamActivityBatchSize);
+        string json = BuildActivityJson(
+            cursor,
+            EventStreamActivityBatchSize,
+            entries,
+            oldestFirst,
+            out _,
+            out _);
+        WriteJson(response, HttpStatusCode.OK, json);
+    }
+
+    private string BuildActivityJson(
+        long cursor,
+        int maximum,
+        List<ActivityFeedEntry> entries,
+        bool oldestFirst,
+        out long latestCursor,
+        out int eventCount)
+    {
+        bool enabled = _activityLog.ActivityFeedEnabled;
+        entries.Clear();
+        latestCursor = enabled
+            ? _activityLog.CopyActivityAfter(cursor, maximum, entries, oldestFirst)
+            : _activityLog.LatestActivityCursor;
+        eventCount = entries.Count;
+
+        var json = new StringBuilder(48 + (entries.Count * 128));
+        json.Append("{\"enabled\":").Append(enabled ? "true" : "false");
+        json.Append(",\"cursor\":");
+        json.Append(latestCursor.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"events\":[");
+        for (int index = 0; index < entries.Count; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            ActivityFeedEntry entry = entries[index];
+            json.Append('{');
+            json.Append("\"id\":").Append(entry.Id.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"unixMs\":").Append(
+                entry.UnixMs.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"type\":").Append(JsonWriter.Quote(entry.Type));
+            json.Append(",\"data\":").Append(entry.DataJson);
+            json.Append('}');
+        }
+
+        json.Append("]}");
+        return json.ToString();
+    }
+
+    private string BuildConsoleLogJson(
+        long cursor,
+        int maximum,
+        out long latestCursor,
+        out int lineCount)
+    {
+        var entries = new List<LogEntry>(maximum);
+        latestCursor = _logRingBuffer!.CopyAfter(cursor, maximum, entries);
+        lineCount = entries.Count;
+        var json = new StringBuilder(32 + (entries.Count * 128));
+        json.Append("{\"cursor\":");
+        json.Append(latestCursor.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"lines\":[");
+        for (int index = 0; index < entries.Count; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            LogEntry entry = entries[index];
+            json.Append('{');
+            json.Append("\"seq\":").Append(entry.Seq.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"time\":").Append(entry.UnixMs.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"level\":").Append(JsonWriter.Quote(entry.Level));
+            json.Append(",\"source\":").Append(JsonWriter.Quote(entry.Source));
+            json.Append(",\"text\":").Append(JsonWriter.Quote(entry.Message));
+            json.Append('}');
+        }
+
+        json.Append("]}");
+        return json.ToString();
+    }
+
+    private void ServeConsoleMeta(HttpListenerResponse response)
+    {
+        bool allowAll = _config.AllowAllCommands;
+        var whitelist = new List<string>(_config.ConsoleWhitelist);
+        whitelist.Sort(StringComparer.Ordinal);
+        List<ConsoleCommandInfo> commands = _consoleBridge!.GetKnownCommands();
+        var json = new StringBuilder(256 + (whitelist.Count * 16) + (commands.Count * 160));
+        json.Append("{\"allowAll\":").Append(allowAll ? "true" : "false");
+        json.Append(",\"whitelist\":[");
+        for (int index = 0; index < whitelist.Count; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            json.Append(JsonWriter.Quote(whitelist[index]));
+        }
+
+        json.Append("],\"commands\":[");
+        bool needsComma = false;
+        var emitted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        IReadOnlyList<VwmCommandDefinition> voCommands = VwmCommandRegistry.All;
+        for (int index = 0; index < voCommands.Count; index++)
+        {
+            VwmCommandDefinition definition = voCommands[index];
+            string name = "vwm " + definition.Name;
+            AppendConsoleCommandMetadata(
+                json,
+                ref needsComma,
+                name,
+                definition.Description,
+                isCheat: false,
+                definition);
+            emitted.Add(name);
+        }
+
+        for (int index = 0; index < commands.Count; index++)
+        {
+            ConsoleCommandInfo command = commands[index];
+            string lowerName = command.Name.ToLowerInvariant();
+            bool implicitlyAllowed = string.Equals(lowerName, "vwm", StringComparison.Ordinal);
+            if (!allowAll && !implicitlyAllowed && !whitelist.Contains(lowerName))
+            {
+                continue;
+            }
+
+            if (emitted.Contains(command.Name))
+            {
+                continue;
+            }
+
+            VwmCommandDefinition? definition = null;
+            if (VwmCommandRegistry.TryGetVanilla(lowerName, out VwmCommandDefinition? curated))
+            {
+                definition = curated;
+            }
+
+            string description = definition?.Description ?? command.Description;
+            AppendConsoleCommandMetadata(
+                json,
+                ref needsComma,
+                command.Name,
+                description,
+                command.IsCheat,
+                definition);
+            emitted.Add(command.Name);
+        }
+
+        IReadOnlyList<VwmCommandDefinition> vanillaCommands = VwmCommandRegistry.Vanilla;
+        for (int index = 0; index < vanillaCommands.Count; index++)
+        {
+            VwmCommandDefinition definition = vanillaCommands[index];
+            if (emitted.Contains(definition.Name) ||
+                (!allowAll && !whitelist.Contains(definition.Name)))
+            {
+                continue;
+            }
+
+            AppendConsoleCommandMetadata(
+                json,
+                ref needsComma,
+                definition.Name,
+                definition.Description,
+                string.Equals(definition.Name, "sleep", StringComparison.Ordinal),
+                definition);
+            emitted.Add(definition.Name);
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private static void AppendConsoleCommandMetadata(
+        StringBuilder json,
+        ref bool needsComma,
+        string name,
+        string description,
+        bool isCheat,
+        VwmCommandDefinition? definition)
+    {
+        if (needsComma)
+        {
+            json.Append(',');
+        }
+
+        json.Append('{');
+        json.Append("\"name\":").Append(JsonWriter.Quote(name));
+        json.Append(",\"description\":").Append(JsonWriter.Quote(description));
+        json.Append(",\"cheat\":").Append(isCheat ? "true" : "false");
+        json.Append(",\"usage\":").Append(JsonWriter.Quote(definition?.Usage ?? name));
+        json.Append(",\"category\":").Append(JsonWriter.Quote(definition?.Category ?? "server"));
+        json.Append(",\"examples\":[");
+        string[] examples = definition?.Examples ?? Array.Empty<string>();
+        for (int index = 0; index < examples.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            json.Append(JsonWriter.Quote(examples[index]));
+        }
+
+        json.Append(']');
+        json.Append(",\"playerArg\":").Append(definition?.PlayerArg == true ? "true" : "false");
+        json.Append(",\"itemArg\":").Append(definition?.ItemArg == true ? "true" : "false");
+        json.Append('}');
+        needsComma = true;
+    }
+
+    private void ServeAdminAction(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        string actionName,
+        Func<string, ConsoleActionResult> action)
+    {
+        ReadAuditIdentity(request, out string operatorName, out string source);
+        if (!TryReadRequiredString(request, response, "player", "player is required", out string player))
+        {
+            _activityLog.RecordAdminAction(
+                operatorName,
+                actionName,
+                null,
+                "error",
+                "player is required",
+                source);
+            return;
+        }
+
+        ConsoleActionResult result = action(player);
+        _activityLog.RecordAdminAction(
+            operatorName,
+            actionName,
+            player,
+            result.Ok ? "ok" : "error",
+            result.Ok ? "completed" : result.Error,
+            source);
+        string json = result.Ok
+            ? "{\"ok\":true}"
+            : "{\"ok\":false,\"error\":" + JsonWriter.Quote(result.Error) + "}";
+        WriteJson(response, HttpStatusCode.OK, json);
+    }
+
+    private void ServeAdminChat(
+        HttpListenerRequest request,
+        HttpListenerResponse response)
+    {
+        if (!TryReadAdminChatRequest(request, response, out string text) ||
+            !TryAcceptAdminChatSend(response))
+        {
+            return;
+        }
+
+        ConsoleActionResult result = _consoleBridge!.BroadcastChat(text);
+        if (!result.Ok)
+        {
+            WriteAdminChatError(response, HttpStatusCode.ServiceUnavailable, "chat unavailable");
+            return;
+        }
+
+        ReadAuditIdentity(request, out string operatorName, out _);
+        _activityLog.RecordAdminAction(
+            operatorName,
+            "chat",
+            text,
+            "ok",
+            text,
+            "web");
+        WriteJson(response, HttpStatusCode.OK, "{\"ok\":true}");
+    }
+
+    private static bool TryReadAdminChatRequest(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        out string text)
+    {
+        text = string.Empty;
+        if (!TryReadRequestBody(request, out string json, out bool tooLarge))
+        {
+            WriteAdminChatError(
+                response,
+                tooLarge ? HttpStatusCode.RequestEntityTooLarge : HttpStatusCode.BadRequest,
+                tooLarge ? "payload too large" : "bad request");
+            return false;
+        }
+
+        if (!TryReadJsonStringProperty(json, "text", out text))
+        {
+            WriteAdminChatError(response, HttpStatusCode.BadRequest, "text is required");
+            return false;
+        }
+
+        text = StripControlCharacters(text.Trim()).Trim();
+        if (text.Length == 0)
+        {
+            WriteAdminChatError(response, HttpStatusCode.BadRequest, "text is required");
+            return false;
+        }
+
+        if (text.Length > MaximumAdminChatTextLength)
+        {
+            WriteAdminChatError(
+                response,
+                HttpStatusCode.BadRequest,
+                "text must be 256 characters or fewer");
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryAcceptAdminChatSend(HttpListenerResponse response)
+    {
+        long nowTicks = DateTime.UtcNow.Ticks;
+        bool rateLimited;
+        lock (_adminChatRateLock)
+        {
+            if (_adminChatSendTicks.Count > 0 && nowTicks < _adminChatSendTicks.Peek())
+            {
+                _adminChatSendTicks.Clear();
+            }
+
+            while (_adminChatSendTicks.Count > 0 &&
+                   nowTicks - _adminChatSendTicks.Peek() >= AdminChatSendWindowTicks)
+            {
+                _adminChatSendTicks.Dequeue();
+            }
+
+            rateLimited = _adminChatSendTicks.Count >= MaximumAdminChatSendsPerWindow;
+            if (!rateLimited)
+            {
+                _adminChatSendTicks.Enqueue(nowTicks);
+            }
+        }
+
+        if (!rateLimited)
+        {
+            return true;
+        }
+
+        WriteAdminChatError(response, (HttpStatusCode)429, "rate limited");
+        return false;
+    }
+
+    private static string StripControlCharacters(string value)
+    {
+        StringBuilder? sanitized = null;
+        for (int index = 0; index < value.Length; index++)
+        {
+            char character = value[index];
+            if (char.IsControl(character))
+            {
+                sanitized ??= new StringBuilder(value.Length).Append(value, 0, index);
+                continue;
+            }
+
+            sanitized?.Append(character);
+        }
+
+        return sanitized?.ToString() ?? value;
+    }
+
+    private static void WriteAdminChatError(
+        HttpListenerResponse response,
+        HttpStatusCode status,
+        string error)
+    {
+        WriteJson(
+            response,
+            status,
+            "{\"ok\":false,\"error\":" + JsonWriter.Quote(error) + "}");
+    }
+
+    private void ServeBanList(HttpListenerResponse response)
+    {
+        ConsoleBanListResult result = _consoleBridge!.BanList();
+        if (!result.Ok)
+        {
+            WriteJson(
+                response,
+                HttpStatusCode.OK,
+                "{\"ok\":false,\"error\":" + JsonWriter.Quote(result.Error) + "}");
+            return;
+        }
+
+        var json = new StringBuilder(16 + (result.Banned.Count * 24));
+        json.Append("{\"banned\":[");
+        for (int index = 0; index < result.Banned.Count; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            json.Append(JsonWriter.Quote(result.Banned[index]));
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServeSave(HttpListenerRequest request, HttpListenerResponse response)
+    {
+        ReadAuditIdentity(request, out string operatorName, out string source);
+        ConsoleSaveResult result = _consoleBridge!.Save();
+        _activityLog.RecordAdminAction(
+            operatorName,
+            "save",
+            null,
+            result.Ok ? "ok" : "error",
+            result.Ok
+                ? result.AlreadySaving ? "already saving" : "save requested"
+                : result.Error,
+            source);
+        string json = result.Ok
+            ? "{\"ok\":true,\"alreadySaving\":" + (result.AlreadySaving ? "true" : "false") + "}"
+            : "{\"ok\":false,\"error\":" + JsonWriter.Quote(result.Error) + "}";
+        WriteJson(response, HttpStatusCode.OK, json);
+    }
+
+    private void ServeTow(HttpListenerRequest request, HttpListenerResponse response)
+    {
+        ReadAuditIdentity(request, out string operatorName, out string source);
+        if (!TryReadTowRequest(
+                request,
+                response,
+                out string shipId,
+                out float x,
+                out float z,
+                out string requestError))
+        {
+            _activityLog.RecordAdminAction(
+                operatorName,
+                "tow",
+                null,
+                "error",
+                requestError,
+                source);
+            return;
+        }
+
+        ShipTowResult result = _consoleBridge!.TowShip(shipId, x, z);
+        string auditReason = result.Ok
+            ? string.Format(
+                CultureInfo.InvariantCulture,
+                "moved {0:0.0}m from ({1:0.0}, {2:0.0}) to ({3:0.0}, {4:0.0}, {5:0.0})",
+                result.Distance,
+                result.From.x,
+                result.From.z,
+                result.Target.x,
+                result.Target.y,
+                result.Target.z)
+            : !string.IsNullOrEmpty(result.Reason) ? result.Reason : result.Message;
+        _activityLog.RecordAdminAction(
+            operatorName,
+            "tow",
+            shipId,
+            result.Ok ? "ok" : "error",
+            auditReason,
+            source);
+
+        if (result.Ok)
+        {
+            _log.Info(string.Format(
+                CultureInfo.InvariantCulture,
+                "[LiveMap] ship tow by {0}: {1} ({2:0.0}, {3:0.0}, {4:0.0}) -> " +
+                "({5:0.0}, {6:0.0}, {7:0.0}), {8:0.0}m",
+                SanitizeLogValue(string.IsNullOrWhiteSpace(operatorName) ? source : operatorName),
+                shipId,
+                result.From.x,
+                result.From.y,
+                result.From.z,
+                result.Target.x,
+                result.Target.y,
+                result.Target.z,
+                result.Distance));
+
+            var json = new StringBuilder(128);
+            json.Append("{\"ok\":true,\"moved\":").Append(JsonWriter.Number(result.Distance));
+            json.Append(",\"target\":{");
+            json.Append("\"x\":").Append(JsonWriter.Number(result.Target.x));
+            json.Append(",\"y\":").Append(JsonWriter.Number(result.Target.y));
+            json.Append(",\"z\":").Append(JsonWriter.Number(result.Target.z));
+            json.Append("}}");
+            WriteJson(response, HttpStatusCode.OK, json.ToString());
+            return;
+        }
+
+        if (result.Outcome == ShipTowOutcome.NotFound)
+        {
+            WriteJson(
+                response,
+                HttpStatusCode.NotFound,
+                "{\"ok\":false,\"error\":\"Ship not found\",\"message\":\"Ship not found\"}");
+            return;
+        }
+
+        if (result.Outcome == ShipTowOutcome.Conflict)
+        {
+            WriteJson(
+                response,
+                HttpStatusCode.Conflict,
+                "{\"ok\":false,\"reason\":" + JsonWriter.Quote(result.Reason) +
+                ",\"error\":" + JsonWriter.Quote(result.Message) +
+                ",\"message\":" + JsonWriter.Quote(result.Message) + "}");
+            return;
+        }
+
+        WriteJson(
+            response,
+            HttpStatusCode.ServiceUnavailable,
+            "{\"ok\":false,\"error\":" + JsonWriter.Quote(result.Message) +
+            ",\"message\":" + JsonWriter.Quote(result.Message) + "}");
+    }
+
+    private void ServeShutdown(HttpListenerRequest request, HttpListenerResponse response)
+    {
+        ReadAuditIdentity(request, out string operatorName, out string source);
+        if (!TryReadShutdownRequest(
+                request,
+                response,
+                out bool cancel,
+                out int seconds,
+                out string message,
+                out string requestError))
+        {
+            _activityLog.RecordAdminAction(
+                operatorName,
+                "shutdown",
+                null,
+                "error",
+                requestError,
+                source);
+            return;
+        }
+
+        ShutdownActionResult result = cancel
+            ? _consoleBridge!.CancelShutdown()
+            : _consoleBridge!.ArmShutdown(seconds, message);
+        _activityLog.RecordAdminAction(
+            operatorName,
+            "shutdown",
+            cancel ? "cancel" : seconds.ToString(CultureInfo.InvariantCulture),
+            result.Ok ? "ok" : "error",
+            result.Ok
+                ? cancel
+                    ? result.Changed ? "cancelled" : "not pending"
+                    : "scheduled"
+                : result.Error,
+            source);
+
+        var json = new StringBuilder(192);
+        json.Append("{\"ok\":").Append(result.Ok ? "true" : "false");
+        if (!result.Ok)
+        {
+            json.Append(",\"error\":").Append(JsonWriter.Quote(result.Error));
+        }
+
+        json.Append(",\"action\":").Append(JsonWriter.Quote(cancel ? "cancelled" : "armed"));
+        if (cancel)
+        {
+            json.Append(",\"cancelled\":").Append(result.Changed ? "true" : "false");
+        }
+
+        json.Append(",\"shutdown\":");
+        AppendShutdownJson(json, result.Snapshot);
+        json.Append('}');
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServeStats(HttpListenerResponse response)
+    {
+        StatsSnapshot stats = _consoleBridge!.Stats;
+        LiveMapSnapshot snapshot = _getSnapshot();
+        var json = new StringBuilder(256);
+        json.Append('{');
+        json.Append("\"uptimeSeconds\":").Append(JsonWriter.Number(stats.UptimeSeconds));
+        json.Append(",\"players\":").Append(stats.Players.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"peers\":").Append(stats.Peers.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"zdoCount\":").Append(stats.ZdoCount.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"monoHeapBytes\":").Append(stats.MonoHeapBytes.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"frameAvgMs\":").Append(JsonWriter.Number(stats.FrameAvgMs));
+        json.Append(",\"frameMaxMs\":").Append(JsonWriter.Number(stats.FrameMaxMs));
+        json.Append(",\"snapshotUnixMs\":").Append(stats.SnapshotUnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"worldName\":").Append(JsonWriter.Quote(snapshot.WorldName));
+        json.Append(",\"day\":").Append(snapshot.Day.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"timeOfDay\":").Append(JsonWriter.Number(snapshot.TimeOfDay));
+        json.Append(",\"shutdown\":");
+        AppendShutdownJson(json, _consoleBridge.Shutdown);
+        ActivityLogHealthSnapshot activityHealth = _activityLog.GetHealth();
+        json.Append(",\"activityLog\":{");
+        json.Append("\"enabled\":").Append(activityHealth.Enabled ? "true" : "false");
+        json.Append(",\"currentFile\":").Append(
+            JsonWriter.Quote(activityHealth.CurrentFileName));
+        json.Append(",\"eventsWrittenToday\":").Append(
+            activityHealth.EventsWrittenToday.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"lastWriteAgeSeconds\":");
+        if (activityHealth.LastWriteAgeSeconds.HasValue)
+        {
+            json.Append(JsonWriter.Number(activityHealth.LastWriteAgeSeconds.Value));
+        }
+        else
+        {
+            json.Append("null");
+        }
+
+        json.Append('}');
+        json.Append('}');
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private static void AppendShutdownJson(
+        StringBuilder json,
+        ServerShutdownSnapshot snapshot)
+    {
+        long remainingSeconds = 0L;
+        if (snapshot.Pending)
+        {
+            long remainingMilliseconds = Math.Max(
+                0L,
+                snapshot.DeadlineUnixMs - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            remainingSeconds = (remainingMilliseconds + 999L) / 1000L;
+        }
+
+        json.Append('{');
+        json.Append("\"pending\":").Append(snapshot.Pending ? "true" : "false");
+        json.Append(",\"deadlineUnixMs\":");
+        if (snapshot.Pending)
+        {
+            json.Append(snapshot.DeadlineUnixMs.ToString(CultureInfo.InvariantCulture));
+        }
+        else
+        {
+            json.Append("null");
+        }
+
+        json.Append(",\"secondsRemaining\":").Append(
+            remainingSeconds.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"totalSeconds\":").Append(
+            snapshot.TotalSeconds.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"message\":").Append(JsonWriter.Quote(snapshot.Message));
+        json.Append('}');
+    }
+
+    private static bool TryReadShutdownRequest(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        out bool cancel,
+        out int seconds,
+        out string message,
+        out string error)
+    {
+        cancel = false;
+        seconds = 0;
+        message = string.Empty;
+        error = "bad request";
+        if (!TryReadRequestBody(request, out string json, out bool tooLarge))
+        {
+            error = tooLarge ? "payload too large" : "bad request";
+            WriteJson(
+                response,
+                tooLarge ? HttpStatusCode.RequestEntityTooLarge : HttpStatusCode.BadRequest,
+                "{\"ok\":false,\"error\":" + JsonWriter.Quote(error) + "}");
+            return false;
+        }
+
+        string action = string.Empty;
+        if (TryFindJsonPropertyValue(json, "action", out _) &&
+            !TryReadJsonStringProperty(json, "action", out action))
+        {
+            error = "invalid action";
+            WriteJson(response, HttpStatusCode.BadRequest, "{\"ok\":false,\"error\":\"invalid action\"}");
+            return false;
+        }
+
+        action = action.Trim();
+        bool cancelFlag = false;
+        if (TryFindJsonPropertyValue(json, "cancel", out _) &&
+            !TryReadJsonBooleanProperty(json, "cancel", out cancelFlag))
+        {
+            error = "invalid cancel flag";
+            WriteJson(response, HttpStatusCode.BadRequest, "{\"ok\":false,\"error\":\"invalid cancel flag\"}");
+            return false;
+        }
+
+        cancel = cancelFlag || string.Equals(action, "cancel", StringComparison.OrdinalIgnoreCase);
+        if (cancel)
+        {
+            return true;
+        }
+
+        if (action.Length > 0 &&
+            !string.Equals(action, "arm", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(action, "schedule", StringComparison.OrdinalIgnoreCase))
+        {
+            error = "invalid action";
+            WriteJson(response, HttpStatusCode.BadRequest, "{\"ok\":false,\"error\":\"invalid action\"}");
+            return false;
+        }
+
+        if (!TryReadJsonNumberProperty(json, "seconds", out float parsedSeconds) ||
+            float.IsNaN(parsedSeconds) ||
+            float.IsInfinity(parsedSeconds) ||
+            parsedSeconds != Math.Truncate(parsedSeconds) ||
+            parsedSeconds < int.MinValue ||
+            parsedSeconds > int.MaxValue)
+        {
+            error = "integer seconds are required";
+            WriteJson(
+                response,
+                HttpStatusCode.BadRequest,
+                "{\"ok\":false,\"error\":\"integer seconds are required\"}");
+            return false;
+        }
+
+        seconds = (int)parsedSeconds;
+        if (TryFindJsonPropertyValue(json, "message", out _) &&
+            !TryReadJsonStringProperty(json, "message", out message))
+        {
+            error = "invalid message";
+            WriteJson(response, HttpStatusCode.BadRequest, "{\"ok\":false,\"error\":\"invalid message\"}");
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryReadTowRequest(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        out string shipId,
+        out float x,
+        out float z,
+        out string error)
+    {
+        shipId = string.Empty;
+        x = 0f;
+        z = 0f;
+        error = "invalid request";
+        if (!TryReadRequestBody(request, out string json, out bool tooLarge))
+        {
+            error = tooLarge ? "payload too large" : "invalid request";
+            WriteJson(
+                response,
+                tooLarge ? HttpStatusCode.RequestEntityTooLarge : HttpStatusCode.BadRequest,
+                "{\"ok\":false,\"error\":" + JsonWriter.Quote(error) + "}");
+            return false;
+        }
+
+        if (!TryParseTowJson(json, out shipId, out x, out z) ||
+            shipId.Length == 0 || shipId.Length > 64 ||
+            float.IsNaN(x) || float.IsInfinity(x) ||
+            float.IsNaN(z) || float.IsInfinity(z) ||
+            Math.Abs(x) > 100000f || Math.Abs(z) > 100000f ||
+            !EntityTracker.TryParseEntityId(shipId, out long userId, out uint objectId) ||
+            !string.Equals(
+                shipId,
+                userId.ToString(CultureInfo.InvariantCulture) + ":" +
+                objectId.ToString(CultureInfo.InvariantCulture),
+                StringComparison.Ordinal))
+        {
+            WriteJson(
+                response,
+                HttpStatusCode.BadRequest,
+                "{\"ok\":false,\"error\":\"invalid request\"}");
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ServePlayers(HttpListenerResponse response, ViewLevel viewLevel)
+    {
+        LiveMapSnapshot snapshot = _getSnapshot();
+        string json = BuildPlayersJson(snapshot, viewLevel);
+        WriteJson(response, HttpStatusCode.OK, json);
+    }
+
+    private string BuildPlayersJson(LiveMapSnapshot snapshot, ViewLevel viewLevel)
+    {
+        bool seesAllPlayers = SeesAllPlayers(viewLevel);
+        bool hasSharedMapAccess = viewLevel != ViewLevel.Public;
+        bool showNames = hasSharedMapAccess || _publicShowPlayerNames;
+        Dictionary<string, string>? dungeonLabels = hasSharedMapAccess
+            ? BuildDungeonLabels(_getDungeonSnapshot())
+            : null;
+        long snapshotAgeMs = snapshot.UnixMs == 0
+            ? 0
+            : Math.Max(0L, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - snapshot.UnixMs);
+        bool snapshotStale = snapshot.UnixMs != 0 &&
+                             snapshotAgeMs > Math.Max(0.25f, _getEffectiveUpdateSeconds()) * 3000.0;
+        var json = new StringBuilder(128 + (snapshot.Players.Length * 96));
+        json.Append("{\"players\":[");
+        bool needsComma = false;
+        for (int index = 0; index < snapshot.Players.Length; index++)
+        {
+            LiveMapPlayerSnapshot player = snapshot.Players[index];
+            if (!seesAllPlayers && !player.IsPublic)
+            {
+                continue;
+            }
+
+            if (needsComma)
+            {
+                json.Append(',');
+            }
+
+            json.Append('{');
+            json.Append("\"name\":").Append(JsonWriter.Quote(showNames ? player.Name : string.Empty));
+            json.Append(",\"x\":").Append(JsonWriter.Number(player.X));
+            json.Append(",\"y\":").Append(JsonWriter.Number(player.Y));
+            json.Append(",\"z\":").Append(JsonWriter.Number(player.Z));
+            if (hasSharedMapAccess)
+            {
+                json.Append(",\"id\":").Append(JsonWriter.Quote(
+                    player.Id.ToString(CultureInfo.InvariantCulture)));
+                json.Append(",\"biome\":").Append(JsonWriter.Quote(player.Biome));
+                json.Append(",\"speedMps\":").Append(JsonWriter.Number(
+                    Math.Round(player.SpeedMps, 2)));
+                json.Append(",\"headingDeg\":").Append(JsonWriter.Number(
+                    Math.Round(player.HeadingDeg, 1)));
+                json.Append(",\"sessionStartUnixMs\":").Append(
+                    player.SessionStartUnixMs.ToString(CultureInfo.InvariantCulture));
+                json.Append(",\"distanceTodayM\":").Append(JsonWriter.Number(
+                    Math.Round(player.DistanceTodayM, 1)));
+                json.Append(",\"health\":").Append(JsonWriter.Number(
+                    Math.Round(player.Health, 1)));
+                json.Append(",\"maxHealth\":").Append(JsonWriter.Number(
+                    Math.Round(player.MaxHealth, 1)));
+                json.Append(",\"dead\":").Append(player.Dead ? "true" : "false");
+                json.Append(",\"pvp\":").Append(player.Pvp ? "true" : "false");
+                json.Append(",\"inBed\":").Append(player.InBed ? "true" : "false");
+                string? dungeonId = _getDungeonId(player.X, player.Y, player.Z);
+                if (dungeonId != null &&
+                    dungeonLabels != null &&
+                    dungeonLabels.TryGetValue(dungeonId, out string dungeonLabel))
+                {
+                    json.Append(",\"inDungeon\":{\"id\":").Append(
+                        JsonWriter.Quote(dungeonId));
+                    json.Append(",\"label\":").Append(JsonWriter.Quote(dungeonLabel));
+                    json.Append('}');
+                }
+            }
+
+            json.Append('}');
+            needsComma = true;
+        }
+
+        json.Append("],\"unixMs\":").Append(snapshot.UnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"snapshotAgeMs\":").Append(snapshotAgeMs.ToString(CultureInfo.InvariantCulture));
+        if (snapshotStale)
+        {
+            json.Append(",\"stale\":true");
+        }
+
+        json.Append('}');
+        return json.ToString();
+    }
+
+    private static Dictionary<string, string> BuildDungeonLabels(
+        DungeonRegistrySnapshot snapshot)
+    {
+        var labels = new Dictionary<string, string>(
+            snapshot.Dungeons.Count,
+            StringComparer.Ordinal);
+        for (int index = 0; index < snapshot.Dungeons.Count; index++)
+        {
+            DungeonSnapshot dungeon = snapshot.Dungeons[index];
+            labels[dungeon.Id] = dungeon.Label;
+        }
+
+        return labels;
+    }
+
+    private void ServeDungeons(HttpListenerResponse response, ViewLevel viewLevel)
+    {
+        if (!DungeonInteriorsAvailable(viewLevel))
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        DungeonRegistrySnapshot snapshot = _ensureDungeonsScanned();
+        LiveMapSnapshot playerSnapshot = _getSnapshot();
+        Dictionary<string, int> playersInside = CountPlayersInside(playerSnapshot);
+        var visible = new List<DungeonSnapshot>(snapshot.Dungeons.Count);
+        for (int index = 0; index < snapshot.Dungeons.Count; index++)
+        {
+            DungeonSnapshot dungeon = snapshot.Dungeons[index];
+            if (PublicDungeonInteriorVisible(viewLevel, dungeon))
+            {
+                visible.Add(dungeon);
+            }
+        }
+
+        var json = new StringBuilder(128 + (visible.Count * 192));
+        json.Append("{\"unixMs\":").Append(
+            snapshot.RefreshedUnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"scanning\":").Append(snapshot.Scanning ? "true" : "false");
+        json.Append(",\"ready\":").Append(
+            snapshot.InitialScanComplete ? "true" : "false");
+        json.Append(",\"dungeons\":[");
+        for (int index = 0; index < visible.Count; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            DungeonSnapshot dungeon = visible[index];
+            playersInside.TryGetValue(dungeon.Id, out int playerCount);
+            json.Append('{');
+            AppendDungeonMetadataJson(json, dungeon, playerCount);
+            json.Append('}');
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServeDungeon(
+        HttpListenerResponse response,
+        ViewLevel viewLevel,
+        string requestedId)
+    {
+        if (!DungeonInteriorsAvailable(viewLevel))
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        DungeonRegistrySnapshot snapshot = _ensureDungeonsScanned();
+        DungeonSnapshot? dungeon = null;
+        for (int index = 0; index < snapshot.Dungeons.Count; index++)
+        {
+            DungeonSnapshot candidate = snapshot.Dungeons[index];
+            if (string.Equals(candidate.Id, requestedId, StringComparison.Ordinal))
+            {
+                dungeon = candidate;
+                break;
+            }
+        }
+
+        if (dungeon == null || !PublicDungeonInteriorVisible(viewLevel, dungeon))
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        LiveMapSnapshot playerSnapshot = _getSnapshot();
+        bool seesAllPlayers = SeesAllPlayers(viewLevel);
+        int playerCount = 0;
+        var visiblePlayers = new List<LiveMapPlayerSnapshot>();
+        for (int index = 0; index < playerSnapshot.Players.Length; index++)
+        {
+            LiveMapPlayerSnapshot player = playerSnapshot.Players[index];
+            string? dungeonId = _getDungeonId(player.X, player.Y, player.Z);
+            if (!string.Equals(dungeonId, dungeon.Id, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            playerCount++;
+            if (seesAllPlayers || player.IsPublic)
+            {
+                visiblePlayers.Add(player);
+            }
+        }
+
+        var json = new StringBuilder(
+            320 +
+            ((dungeon.Interior?.Rooms.Count ?? 0) * 112) +
+            (visiblePlayers.Count * 80));
+        json.Append("{\"unixMs\":").Append(
+            snapshot.RefreshedUnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"scanning\":").Append(snapshot.Scanning ? "true" : "false");
+        json.Append(",\"ready\":").Append(
+            snapshot.InitialScanComplete ? "true" : "false");
+        json.Append(',');
+        AppendDungeonMetadataJson(json, dungeon, playerCount);
+        json.Append(",\"interior\":");
+        AppendDungeonInteriorJson(json, dungeon);
+        json.Append(",\"livePlayers\":[");
+        for (int index = 0; index < visiblePlayers.Count; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            LiveMapPlayerSnapshot player = visiblePlayers[index];
+            json.Append("{\"name\":").Append(JsonWriter.Quote(player.Name));
+            json.Append(",\"x\":").Append(JsonWriter.Number(player.X));
+            json.Append(",\"y\":").Append(JsonWriter.Number(player.Y));
+            json.Append(",\"z\":").Append(JsonWriter.Number(player.Z));
+            json.Append('}');
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private Dictionary<string, int> CountPlayersInside(LiveMapSnapshot snapshot)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (int index = 0; index < snapshot.Players.Length; index++)
+        {
+            LiveMapPlayerSnapshot player = snapshot.Players[index];
+            string? dungeonId = _getDungeonId(player.X, player.Y, player.Z);
+            if (dungeonId == null)
+            {
+                continue;
+            }
+
+            counts.TryGetValue(dungeonId, out int count);
+            counts[dungeonId] = count + 1;
+        }
+
+        return counts;
+    }
+
+    private static void AppendDungeonMetadataJson(
+        StringBuilder json,
+        DungeonSnapshot dungeon,
+        int playersInside)
+    {
+        json.Append("\"id\":").Append(JsonWriter.Quote(dungeon.Id));
+        json.Append(",\"type\":").Append(JsonWriter.Quote(dungeon.Type));
+        json.Append(",\"label\":").Append(JsonWriter.Quote(dungeon.Label));
+        json.Append(",\"entrance\":{\"x\":").Append(
+            JsonWriter.Number(dungeon.EntranceX));
+        json.Append(",\"y\":").Append(JsonWriter.Number(dungeon.EntranceY));
+        json.Append(",\"z\":").Append(JsonWriter.Number(dungeon.EntranceZ));
+        json.Append('}');
+        json.Append(",\"zone\":{\"x\":").Append(
+            dungeon.ZoneX.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"y\":").Append(
+            dungeon.ZoneY.ToString(CultureInfo.InvariantCulture));
+        json.Append('}');
+        json.Append(",\"generated\":").Append(dungeon.Generated ? "true" : "false");
+        json.Append(",\"hasInterior\":").Append(
+            dungeon.HasInterior ? "true" : "false");
+        json.Append(",\"roomCount\":").Append(
+            (dungeon.Interior?.Rooms.Count ?? 0).ToString(
+                CultureInfo.InvariantCulture));
+        json.Append(",\"playersInside\":").Append(
+            playersInside.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private static void AppendDungeonInteriorJson(
+        StringBuilder json,
+        DungeonSnapshot dungeon)
+    {
+        DungeonInteriorSnapshot? interior = dungeon.Interior;
+        if (!dungeon.Generated || interior == null)
+        {
+            json.Append("null");
+            return;
+        }
+
+        json.Append('{');
+        json.Append("\"generatorPrefab\":").Append(
+            JsonWriter.Quote(interior.GeneratorPrefab));
+        json.Append(",\"procedural\":").Append(
+            interior.Procedural ? "true" : "false");
+        json.Append(",\"origin\":{\"x\":").Append(JsonWriter.Number(interior.OriginX));
+        json.Append(",\"y\":").Append(JsonWriter.Number(interior.OriginY));
+        json.Append(",\"z\":").Append(JsonWriter.Number(interior.OriginZ));
+        json.Append('}');
+        json.Append(",\"entrance\":{\"x\":").Append(
+            JsonWriter.Number(interior.OriginX));
+        json.Append(",\"y\":").Append(JsonWriter.Number(interior.OriginY));
+        json.Append(",\"z\":").Append(JsonWriter.Number(interior.OriginZ));
+        json.Append('}');
+        DungeonBoundsSnapshot bounds = interior.Bounds;
+        json.Append(",\"bounds\":{\"minX\":").Append(JsonWriter.Number(bounds.MinX));
+        json.Append(",\"maxX\":").Append(JsonWriter.Number(bounds.MaxX));
+        json.Append(",\"minZ\":").Append(JsonWriter.Number(bounds.MinZ));
+        json.Append(",\"maxZ\":").Append(JsonWriter.Number(bounds.MaxZ));
+        json.Append(",\"minY\":").Append(JsonWriter.Number(bounds.MinY));
+        json.Append(",\"maxY\":").Append(JsonWriter.Number(bounds.MaxY));
+        json.Append('}');
+        json.Append(",\"rooms\":[");
+        for (int index = 0; index < interior.Rooms.Count; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            DungeonRoomSnapshot room = interior.Rooms[index];
+            json.Append("{\"name\":").Append(JsonWriter.Quote(room.Name));
+            json.Append(",\"x\":").Append(JsonWriter.Number(room.X));
+            json.Append(",\"y\":").Append(JsonWriter.Number(room.Y));
+            json.Append(",\"z\":").Append(JsonWriter.Number(room.Z));
+            json.Append(",\"sizeX\":").Append(
+                room.SizeX.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"sizeZ\":").Append(
+                room.SizeZ.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"rotYDeg\":").Append(
+                JsonWriter.Number(room.RotationYDegrees));
+            json.Append('}');
+        }
+
+        json.Append("]}");
+    }
+
+    private void ServeTrail(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        ViewLevel viewLevel)
+    {
+        string requestedId = (request.QueryString["id"] ?? string.Empty).Trim();
+        if (!TryResolveHistoryKey(
+                requestedId,
+                out string historyKey,
+                out bool isPlayer,
+                out long playerId))
+        {
+            WriteJson(response, HttpStatusCode.BadRequest, "{\"error\":\"bad request\"}");
+            return;
+        }
+
+        if (isPlayer)
+        {
+            if (viewLevel == ViewLevel.Public && !IsPlayerVisibleToPublic(playerId))
+            {
+                WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+                return;
+            }
+        }
+        else if (!AllowsEntityTrail(viewLevel, requestedId))
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        long windowSeconds = Math.Max(
+            60L,
+            Math.Min(1800L, ParseLong(request.QueryString["window"], 1800L)));
+        PositionSample[] points = _positionHistory.Snapshot(
+            historyKey,
+            windowSeconds * 1000L);
+        if (!isPlayer && viewLevel != ViewLevel.Admin && GetEffectiveFogHide(viewLevel))
+        {
+            points = TrimTrailToExplored(points, _fogTracker.Snapshot);
+        }
+
+        long unixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var json = new StringBuilder(96 + (points.Length * 48));
+        json.Append('{');
+        json.Append("\"id\":").Append(JsonWriter.Quote(historyKey));
+        json.Append(",\"window\":").Append(
+            windowSeconds.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"points\":[");
+        for (int index = 0; index < points.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            PositionSample point = points[index];
+            json.Append('{');
+            json.Append("\"x\":").Append(JsonWriter.Number(point.X));
+            json.Append(",\"z\":").Append(JsonWriter.Number(point.Z));
+            json.Append(",\"t\":").Append(
+                point.UnixMs.ToString(CultureInfo.InvariantCulture));
+            json.Append('}');
+        }
+
+        json.Append("],\"unixMs\":").Append(unixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append('}');
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    // A fogged view may only see the part of an entity's route that lies in explored cells.
+    // The history is oldest first, so keep the run that ends at the newest sample and stops
+    // at the first unexplored one going back. Keeping every explored point instead would
+    // draw a straight line across the unexplored stretch between two explored runs.
+    internal static PositionSample[] TrimTrailToExplored(
+        PositionSample[] points,
+        FogMaskSnapshot fog)
+    {
+        int first = points.Length;
+        while (first > 0 && FogTracker.IsExplored(fog, points[first - 1].X, points[first - 1].Z))
+        {
+            first--;
+        }
+
+        if (first == 0)
+        {
+            return points;
+        }
+
+        var kept = new PositionSample[points.Length - first];
+        Array.Copy(points, first, kept, 0, kept.Length);
+        return kept;
+    }
+
+    private bool IsPlayerVisibleToPublic(long playerId)
+    {
+        if (!_publicView)
+        {
+            return false;
+        }
+
+        LiveMapPlayerSnapshot[] players = _getSnapshot().Players;
+        for (int index = 0; index < players.Length; index++)
+        {
+            if (players[index].Id == playerId)
+            {
+                return SeesAllPlayers(ViewLevel.Public) || players[index].IsPublic;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryResolveHistoryKey(
+        string requestedId,
+        out string historyKey,
+        out bool isPlayer,
+        out long playerId)
+    {
+        historyKey = string.Empty;
+        isPlayer = false;
+        playerId = 0L;
+        if (string.IsNullOrEmpty(requestedId))
+        {
+            return false;
+        }
+
+        if (requestedId.StartsWith("player:", StringComparison.Ordinal))
+        {
+            string value = requestedId.Substring("player:".Length);
+            isPlayer = true;
+            if (!long.TryParse(
+                    value,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out playerId))
+            {
+                return false;
+            }
+
+            historyKey = PositionHistory.PlayerKey(playerId);
+            return true;
+        }
+
+        if (!requestedId.StartsWith("entity:", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        string entityValue = requestedId.Substring("entity:".Length);
+        if (!EntityTracker.TryParseEntityId(
+                entityValue,
+                out long userId,
+                out uint objectId))
+        {
+            return false;
+        }
+
+        string entityId = userId.ToString(CultureInfo.InvariantCulture) + ":" +
+                          objectId.ToString(CultureInfo.InvariantCulture);
+        historyKey = PositionHistory.EntityKey(entityId);
+        return true;
+    }
+
+    private static void ServeHeight(
+        HttpListenerRequest request,
+        HttpListenerResponse response)
+    {
+        if (!TryParseWorldCoordinate(request.QueryString["x"], out float x) ||
+            !TryParseWorldCoordinate(request.QueryString["z"], out float z))
+        {
+            WriteJson(response, HttpStatusCode.BadRequest, "{\"error\":\"bad request\"}");
+            return;
+        }
+
+        if (!LiveMapBehaviour.TryGetGroundHeight(x, z, out float height))
+        {
+            WriteJson(response, HttpStatusCode.ServiceUnavailable, "{\"error\":\"not ready\"}");
+            return;
+        }
+
+        var json = new StringBuilder(64);
+        json.Append('{');
+        json.Append("\"x\":").Append(JsonWriter.Number(x));
+        json.Append(",\"z\":").Append(JsonWriter.Number(z));
+        json.Append(",\"height\":").Append(JsonWriter.Number(height));
+        json.Append('}');
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServePing(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        ViewLevel viewLevel)
+    {
+        if (viewLevel != ViewLevel.Admin)
+        {
+            WriteJson(
+                response,
+                HttpStatusCode.Forbidden,
+                "{\"ok\":false,\"error\":\"forbidden\"}");
+            return;
+        }
+
+        if (!TryReadPingRequest(request, response, out float x, out float z, out string label))
+        {
+            ReadAuditIdentity(request, out string invalidOperator, out string invalidSource);
+            _activityLog.RecordAdminAction(
+                invalidOperator,
+                "ping",
+                null,
+                "error",
+                "invalid request",
+                invalidSource);
+            return;
+        }
+
+        if (!_enqueueMapPing(x, z, label))
+        {
+            ReadAuditIdentity(request, out string busyOperator, out string busySource);
+            _activityLog.RecordAdminAction(
+                busyOperator,
+                "ping",
+                null,
+                "error",
+                "too many pending pings",
+                busySource);
+            WriteJson(
+                response,
+                (HttpStatusCode)429,
+                "{\"ok\":false,\"error\":\"too many pending pings\"}");
+            return;
+        }
+
+        ReadAuditIdentity(request, out string operatorName, out string source);
+        _activityLog.RecordAdminAction(
+            operatorName,
+            "ping",
+            null,
+            "ok",
+            "queued",
+            source);
+
+        WriteJson(response, HttpStatusCode.OK, "{\"ok\":true}");
+    }
+
+    private static bool TryReadPingRequest(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        out float x,
+        out float z,
+        out string label)
+    {
+        x = 0f;
+        z = 0f;
+        label = "Web ping";
+        if (!TryReadRequestBody(request, out string json, out bool tooLarge))
+        {
+            HttpStatusCode status = tooLarge
+                ? HttpStatusCode.RequestEntityTooLarge
+                : HttpStatusCode.BadRequest;
+            string error = tooLarge ? "payload too large" : "bad request";
+            WriteJson(
+                response,
+                status,
+                "{\"ok\":false,\"error\":" + JsonWriter.Quote(error) + "}");
+            return false;
+        }
+
+        if (!TryReadJsonNumberProperty(json, "x", out x) ||
+            !TryReadJsonNumberProperty(json, "z", out z) ||
+            float.IsNaN(x) || float.IsInfinity(x) ||
+            float.IsNaN(z) || float.IsInfinity(z) ||
+            ((double)x * x) + ((double)z * z) >
+            (double)MaximumPingWorldRadius * MaximumPingWorldRadius)
+        {
+            WriteJson(
+                response,
+                HttpStatusCode.BadRequest,
+                "{\"ok\":false,\"error\":\"invalid coordinates\"}");
+            return false;
+        }
+
+        if (TryFindJsonPropertyValue(json, "label", out int labelIndex))
+        {
+            if (!TryParseJsonString(json, labelIndex, out label))
+            {
+                WriteJson(
+                    response,
+                    HttpStatusCode.BadRequest,
+                    "{\"ok\":false,\"error\":\"invalid label\"}");
+                return false;
+            }
+
+            label = label.Trim();
+            if (label.Length == 0)
+            {
+                label = "Web ping";
+            }
+            else if (label.Length > MaximumPingLabelLength)
+            {
+                WriteJson(
+                    response,
+                    HttpStatusCode.BadRequest,
+                    "{\"ok\":false,\"error\":\"label too long\"}");
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string BuildPingJson(MapPingSnapshot ping)
+    {
+        var json = new StringBuilder(96);
+        json.Append('{');
+        json.Append("\"x\":").Append(JsonWriter.Number(ping.X));
+        json.Append(",\"z\":").Append(JsonWriter.Number(ping.Z));
+        json.Append(",\"label\":").Append(JsonWriter.Quote(ping.Label));
+        json.Append(",\"unixMs\":").Append(
+            ping.UnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append('}');
+        return json.ToString();
+    }
+
+    private static string BuildWebPinRevisionJson(long revision)
+    {
+        return "{\"revision\":" + revision.ToString(CultureInfo.InvariantCulture) + "}";
+    }
+
+    // Whether an open event stream sends chat this tick. A stream whose chat was switched
+    // off sends none, and when it comes back on it starts from the newest line rather than
+    // replaying what was said in between.
+    internal static bool UpdateChatStream(
+        bool wasSending,
+        bool available,
+        Func<long> latestCursor,
+        ref long cursor)
+    {
+        if (available && !wasSending)
+        {
+            cursor = latestCursor();
+        }
+
+        return available;
+    }
+
+    // The public view treats a chat line like the player layer treats a player: the sender's
+    // name needs PublicShowPlayerNames, and with RespectInGameVisibility the name and the
+    // position are withheld unless that player is one the public map lists.
+    private string BuildChatJson(
+        MapChatSnapshot chat,
+        ViewLevel viewLevel,
+        HashSet<string>? visibleSenders)
+    {
+        if (viewLevel != ViewLevel.Public)
+        {
+            return BuildChatJson(chat, showName: true, showPosition: true);
+        }
+
+        ResolvePublicChatDisclosure(
+            chat,
+            visibleSenders,
+            _publicShowPlayerNames,
+            out bool showName,
+            out bool showPosition);
+        return BuildChatJson(chat, showName, showPosition);
+    }
+
+    // Null means every sender is listed: the viewer is not public, or the map ignores
+    // in-game visibility. Otherwise it holds the names of the players the public map lists.
+    private HashSet<string>? GetVisibleChatSenders(ViewLevel viewLevel)
+    {
+        if (viewLevel != ViewLevel.Public || SeesAllPlayers(ViewLevel.Public))
+        {
+            return null;
+        }
+
+        var senders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        LiveMapPlayerSnapshot[] players = _getSnapshot().Players;
+        for (int index = 0; index < players.Length; index++)
+        {
+            if (players[index].IsPublic)
+            {
+                senders.Add((players[index].Name ?? string.Empty).Trim());
+            }
+        }
+
+        return senders;
+    }
+
+    internal static void ResolvePublicChatDisclosure(
+        MapChatSnapshot chat,
+        HashSet<string>? visibleSenders,
+        bool publicShowPlayerNames,
+        out bool showName,
+        out bool showPosition)
+    {
+        bool senderListed = chat.ServerOriginated ||
+                            visibleSenders == null ||
+                            visibleSenders.Contains((chat.PlayerName ?? string.Empty).Trim());
+        showPosition = senderListed;
+        showName = chat.ServerOriginated || (senderListed && publicShowPlayerNames);
+    }
+
+    internal static string BuildChatJson(MapChatSnapshot chat, bool showName, bool showPosition)
+    {
+        var json = new StringBuilder(384);
+        json.Append('{');
+        json.Append("\"sequence\":").Append(
+            chat.Sequence.ToString(CultureInfo.InvariantCulture));
+        if (showPosition)
+        {
+            json.Append(",\"x\":").Append(JsonWriter.Number(chat.X));
+            json.Append(",\"z\":").Append(JsonWriter.Number(chat.Z));
+        }
+
+        json.Append(",\"playerName\":").Append(JsonWriter.Quote(
+            showName ? chat.PlayerName : string.Empty));
+        json.Append(",\"text\":").Append(JsonWriter.Quote(chat.Text));
+        json.Append(",\"shout\":").Append(chat.Shout ? "true" : "false");
+        json.Append(",\"unixMs\":").Append(
+            chat.UnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append('}');
+        return json.ToString();
+    }
+
+    private void ServeChat(HttpListenerResponse response, ViewLevel viewLevel)
+    {
+        if (!ChatAvailable(viewLevel))
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        var chats = new List<MapChatSnapshot>(ChatHistoryStore.Capacity);
+        MapPingPatch.CopyChatAfter(0L, chats);
+        HashSet<string>? senders = GetVisibleChatSenders(viewLevel);
+        var json = new StringBuilder(16 + (chats.Count * 384));
+        json.Append("{\"chats\":[");
+        for (int index = 0; index < chats.Count; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            json.Append(BuildChatJson(chats[index], viewLevel, senders));
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServeHeatmap(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        ViewLevel viewLevel)
+    {
+        if (viewLevel == ViewLevel.Public)
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        string window = (request.QueryString["window"] ?? "24h").Trim().ToLowerInvariant();
+        if (window.Length == 0)
+        {
+            window = "24h";
+        }
+        else if (!string.Equals(window, "24h", StringComparison.Ordinal) &&
+                 !string.Equals(window, "7d", StringComparison.Ordinal))
+        {
+            WriteJson(response, HttpStatusCode.BadRequest, "{\"error\":\"bad request\"}");
+            return;
+        }
+
+        ActivityHeatmap? heatmap = _getActivityHeatmap();
+        if (heatmap == null)
+        {
+            WriteJson(response, HttpStatusCode.ServiceUnavailable, "{\"error\":\"not ready\"}");
+            return;
+        }
+
+        long generatedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        ActivityHeatmapSnapshot snapshot = heatmap.Snapshot(window, generatedUnixMs);
+        var json = new StringBuilder(128 + (snapshot.Cells.Length * 24));
+        json.Append("{\"window\":").Append(JsonWriter.Quote(snapshot.Window));
+        json.Append(",\"size\":").Append(
+            ActivityHeatmap.GridSize.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"worldRadius\":").Append(
+            WorldMapRenderer.WorldRadius.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"maxCount\":").Append(
+            snapshot.MaximumCount.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"generatedUnixMs\":").Append(
+            snapshot.GeneratedUnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"cells\":[");
+        for (int index = 0; index < snapshot.Cells.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            ActivityHeatmapCell cell = snapshot.Cells[index];
+            json.Append('[').Append(cell.X.ToString(CultureInfo.InvariantCulture));
+            json.Append(',').Append(cell.Z.ToString(CultureInfo.InvariantCulture));
+            json.Append(',').Append(cell.Count.ToString(CultureInfo.InvariantCulture));
+            json.Append(']');
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServeLeaderboard(HttpListenerResponse response, ViewLevel viewLevel)
+    {
+        if (!LeaderboardAvailable(viewLevel))
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        LeaderboardStore? store = _getLeaderboardStore();
+        if (store == null)
+        {
+            WriteJson(response, HttpStatusCode.ServiceUnavailable, "{\"error\":\"not ready\"}");
+            return;
+        }
+
+        long generatedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        LeaderboardSnapshot snapshot = store.Snapshot(generatedUnixMs, 50);
+        StringBuilder json = new StringBuilder(96 + (snapshot.Players.Length * 112));
+        json.Append("{\"generatedUnixMs\":").Append(
+            snapshot.GeneratedUnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"players\":[");
+        for (int index = 0; index < snapshot.Players.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            LeaderboardPlayerSnapshot player = snapshot.Players[index];
+            json.Append("{\"name\":").Append(JsonWriter.Quote(player.Name));
+            json.Append(",\"playSeconds\":").Append(
+                player.PlaySeconds.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"deaths\":").Append(
+                player.Deaths.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"distanceMeters\":").Append(
+                JsonWriter.Number(Math.Round(player.DistanceMeters, 1)));
+            json.Append(",\"online\":").Append(player.Online ? "true" : "false");
+            json.Append('}');
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServeTimelapseIndex(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        ViewLevel viewLevel)
+    {
+        if (viewLevel == ViewLevel.Public && !_config.PublicTimelapse)
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        TimelapseRecorder? recorder = _getTimelapseRecorder();
+        if (recorder == null)
+        {
+            WriteJson(response, HttpStatusCode.ServiceUnavailable, "{\"error\":\"not ready\"}");
+            return;
+        }
+
+        TimelapseIndexEntry[] frames = recorder.ListFrames();
+        var json = new StringBuilder(128 + (frames.Length * 128));
+        json.Append("{\"frames\":[");
+        for (int index = 0; index < frames.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            TimelapseIndexEntry frame = frames[index];
+            json.Append("{\"t\":").Append(
+                frame.UnixMs.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"day\":").Append(
+                frame.WorldDay.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"exploredCells\":").Append(
+                frame.ExploredCells.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"exploredPct\":").Append(
+                JsonWriter.NumberOneDecimal(frame.ExploredPercent));
+            json.Append(",\"bases\":").Append(
+                frame.BaseCount.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"portals\":").Append(
+                frame.PortalCount.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"beds\":").Append(
+                frame.BedCount.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"wards\":").Append(
+                frame.WardCount.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"bossMask\":").Append(
+                frame.BossMask.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"bytes\":").Append(
+                frame.SizeBytes.ToString(CultureInfo.InvariantCulture));
+            json.Append('}');
+        }
+
+        json.Append("],\"count\":").Append(
+            frames.Length.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"bytes\":").Append(
+            recorder.TotalBytes.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"retention\":{\"hourlyDays\":").Append(
+            TimelapseRetention.HourlyRetentionDays.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"dailyDays\":").Append(
+            TimelapseRetention.DailyRetentionDays.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"maxFrames\":").Append(
+            TimelapseRetention.MaximumFrames.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"maxBytes\":").Append(
+            TimelapseRetention.MaximumDiskBytes.ToString(CultureInfo.InvariantCulture));
+        json.Append("},\"intervalMinutes\":").Append(
+            _config.TimelapseIntervalMinutes.ToString(CultureInfo.InvariantCulture));
+        json.Append('}');
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServeTimelapseFrame(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        ViewLevel viewLevel)
+    {
+        if (viewLevel == ViewLevel.Public && !_config.PublicTimelapse)
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        TimelapseRecorder? recorder = _getTimelapseRecorder();
+        if (recorder == null)
+        {
+            WriteJson(response, HttpStatusCode.ServiceUnavailable, "{\"error\":\"not ready\"}");
+            return;
+        }
+
+        if (!long.TryParse(
+                request.QueryString["t"],
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out long t))
+        {
+            WriteJson(response, HttpStatusCode.BadRequest, "{\"error\":\"bad request\"}");
+            return;
+        }
+
+        TimelapseFrame? frame = recorder.ReadFrame(t);
+        if (frame == null)
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        int movementMaximum = 0;
+        for (int index = 0; index < frame.MovementCells.Length; index++)
+        {
+            movementMaximum = Math.Max(movementMaximum, frame.MovementCells[index].Count);
+        }
+
+        var json = new StringBuilder(
+            1024 + (frame.Bases.Length * 64) +
+            ((frame.Portals.Length + frame.Beds.Length + frame.Wards.Length) * 32) +
+            (frame.MovementCells.Length * 24));
+        json.Append("{\"t\":").Append(frame.UnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"day\":").Append(
+            frame.WorldDay.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"season\":").Append(JsonWriter.Quote(frame.Season));
+        json.Append(",\"bossMask\":").Append(
+            frame.BossMask.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"bosses\":[");
+        for (int index = 0; index < frame.BossKeys.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            json.Append(JsonWriter.Quote(frame.BossKeys[index]));
+        }
+
+        json.Append("],\"size\":").Append(
+            FogTracker.Size.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"exploredCells\":").Append(
+            frame.ExploredCells.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"exploredPct\":").Append(
+            JsonWriter.NumberOneDecimal(frame.ExploredPercent));
+        json.Append(",\"fog\":");
+        AppendFogRuns(json, frame.FogBits);
+        json.Append(",\"bases\":[");
+        for (int index = 0; index < frame.Bases.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            PlayerBaseEntry playerBase = frame.Bases[index];
+            json.Append('[').Append(JsonWriter.Number(playerBase.X));
+            json.Append(',').Append(JsonWriter.Number(playerBase.Z));
+            json.Append(',').Append(JsonWriter.Number(playerBase.Radius));
+            json.Append(',').Append(playerBase.Pieces.ToString(CultureInfo.InvariantCulture));
+            json.Append(']');
+        }
+
+        json.Append("],\"portals\":[");
+        for (int index = 0; index < frame.Portals.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            TimelapsePoint point = frame.Portals[index];
+            json.Append('[').Append(JsonWriter.Number(point.X));
+            json.Append(',').Append(JsonWriter.Number(point.Z)).Append(']');
+        }
+
+        json.Append("],\"beds\":[");
+        for (int index = 0; index < frame.Beds.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            TimelapsePoint point = frame.Beds[index];
+            json.Append('[').Append(JsonWriter.Number(point.X));
+            json.Append(',').Append(JsonWriter.Number(point.Z)).Append(']');
+        }
+
+        json.Append("],\"wards\":[");
+        for (int index = 0; index < frame.Wards.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            TimelapsePoint point = frame.Wards[index];
+            json.Append('[').Append(JsonWriter.Number(point.X));
+            json.Append(',').Append(JsonWriter.Number(point.Z)).Append(']');
+        }
+
+        json.Append("],\"movementSize\":").Append(
+            ActivityHeatmap.GridSize.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"movementMax\":").Append(
+            movementMaximum.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"movement\":[");
+        for (int index = 0; index < frame.MovementCells.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            TimelapseMovementCell cell = frame.MovementCells[index];
+            json.Append('[').Append(cell.Index.ToString(CultureInfo.InvariantCulture));
+            json.Append(',').Append(cell.Count.ToString(CultureInfo.InvariantCulture));
+            json.Append(']');
+        }
+
+        json.Append("]}");
+        byte[] bytes = Encoding.UTF8.GetBytes(json.ToString());
+        string etag = "\"tl-" + t.ToString(CultureInfo.InvariantCulture) + "-" +
+                      bytes.Length.ToString(CultureInfo.InvariantCulture) + "\"";
+        WriteCacheableBytes(
+            request,
+            response,
+            "application/json; charset=utf-8",
+            bytes,
+            null,
+            etag,
+            "private, max-age=86400");
+    }
+
+    private static void AppendFogRuns(StringBuilder json, byte[] fogBits)
+    {
+        const int CellCount = FogTracker.Size * FogTracker.Size;
+        json.Append('[');
+        bool exploredRun = false;
+        int runLength = 0;
+        bool needsComma = false;
+        for (int index = 0; index < CellCount; index++)
+        {
+            bool explored = (fogBits[index >> 3] & (1 << (index & 7))) != 0;
+            if (explored != exploredRun)
+            {
+                if (needsComma)
+                {
+                    json.Append(',');
+                }
+
+                json.Append(runLength.ToString(CultureInfo.InvariantCulture));
+                needsComma = true;
+                exploredRun = explored;
+                runLength = 0;
+            }
+
+            runLength++;
+        }
+
+        if (needsComma)
+        {
+            json.Append(',');
+        }
+
+        json.Append(runLength.ToString(CultureInfo.InvariantCulture));
+        json.Append(']');
+    }
+
+    private void ServeEntities(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        ViewLevel viewLevel)
+    {
+        if (!EntitiesAvailable(viewLevel))
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        string requestedFocus = (request.QueryString["focus"] ?? string.Empty).Trim();
+        if (!string.IsNullOrEmpty(requestedFocus))
+        {
+            if (requestedFocus.StartsWith("entity:", StringComparison.Ordinal))
+            {
+                requestedFocus = requestedFocus.Substring("entity:".Length);
+            }
+
+            if (!EntityTracker.TryParseEntityId(
+                    requestedFocus,
+                    out long focusUserId,
+                    out uint focusObjectId))
+            {
+                WriteJson(response, HttpStatusCode.BadRequest, "{\"error\":\"bad request\"}");
+                return;
+            }
+
+            string focusId = focusUserId.ToString(CultureInfo.InvariantCulture) + ":" +
+                             focusObjectId.ToString(CultureInfo.InvariantCulture);
+            TrackedEntitySnapshot? focused = FindTrackedEntity(focusId);
+            if (focused == null ||
+                !AllowsEntityGroup(viewLevel, focused.Group) ||
+                !PointIsVisible(viewLevel, focused.X, focused.Z))
+            {
+                WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+                return;
+            }
+
+            _noteEntityFocusRequested(focusId);
+            ServeEntityFocus(response, focusId);
+            return;
+        }
+
+        string requestedGroups = (request.QueryString["groups"] ?? string.Empty).Trim();
+        bool entitiesRequested = string.IsNullOrEmpty(requestedGroups);
+        bool creaturesRequested = false;
+        string[] groups = requestedGroups.Split(',');
+        for (int index = 0; index < groups.Length; index++)
+        {
+            string group = groups[index].Trim();
+            if (string.Equals(group, "creatures", StringComparison.OrdinalIgnoreCase))
+            {
+                creaturesRequested = AllowsEntityGroup(viewLevel, "creatures");
+            }
+            else if (!string.IsNullOrEmpty(group) && AllowsEntityGroup(viewLevel, group))
+            {
+                entitiesRequested = true;
+            }
+        }
+
+        _noteEntitiesRequested(entitiesRequested, creaturesRequested);
+        EntityMapSnapshot snapshot = _getEntitySnapshot();
+        bool hideUnexplored = GetEffectiveFogHide(viewLevel);
+        FogMaskSnapshot fogSnapshot = hideUnexplored ? _fogTracker.Snapshot : FogMaskSnapshot.Empty;
+        bool showOwnerNames = ShowsOwnerNames(viewLevel);
+        var json = new StringBuilder(64 + (snapshot.Entities.Length * 112));
+        json.Append("{\"revision\":");
+        json.Append(snapshot.Revision.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"time\":").Append(snapshot.UnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"groups\":[");
+        bool needsGroupComma = false;
+        for (int index = 0; index < snapshot.Groups.Length; index++)
+        {
+            EntityGroupSnapshot group = snapshot.Groups[index];
+            if (!AllowsEntityGroup(viewLevel, group.Key))
+            {
+                continue;
+            }
+
+            int visibleCount = CountVisibleEntities(
+                snapshot.Entities,
+                group.Key,
+                hideUnexplored,
+                fogSnapshot);
+            if (needsGroupComma)
+            {
+                json.Append(',');
+            }
+
+            json.Append('{');
+            json.Append("\"key\":").Append(JsonWriter.Quote(group.Key));
+            json.Append(",\"count\":").Append(
+                visibleCount.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"cap\":").Append(
+                group.Cap.ToString(CultureInfo.InvariantCulture));
+            if (group.Truncated)
+            {
+                json.Append(",\"truncated\":true");
+            }
+
+            json.Append('}');
+            needsGroupComma = true;
+        }
+
+        json.Append("],\"entities\":[");
+        bool needsEntityComma = false;
+        for (int index = 0; index < snapshot.Entities.Length; index++)
+        {
+            TrackedEntitySnapshot entity = snapshot.Entities[index];
+            if (!AllowsEntityGroup(viewLevel, entity.Group) ||
+                (hideUnexplored && !FogTracker.IsExplored(fogSnapshot, entity.X, entity.Z)))
+            {
+                continue;
+            }
+
+            if (needsEntityComma)
+            {
+                json.Append(',');
+            }
+
+            json.Append('{');
+            json.Append("\"id\":").Append(JsonWriter.Quote(entity.Id));
+            json.Append(",\"group\":").Append(JsonWriter.Quote(entity.Group));
+            json.Append(",\"prefab\":").Append(JsonWriter.Quote(entity.Prefab));
+            json.Append(",\"x\":").Append(JsonWriter.Number(entity.X));
+            json.Append(",\"y\":").Append(JsonWriter.Number(entity.Y));
+            json.Append(",\"z\":").Append(JsonWriter.Number(entity.Z));
+            json.Append(",\"rotYDeg\":").Append(JsonWriter.Number(
+                Math.Round(entity.RotYDeg, 1)));
+            if (!string.IsNullOrEmpty(entity.Tag))
+            {
+                json.Append(",\"tag\":").Append(JsonWriter.Quote(entity.Tag));
+            }
+            if (string.Equals(entity.Group, "tombstone", StringComparison.Ordinal))
+            {
+                json.Append(",\"owner\":").Append(JsonWriter.Quote(
+                    showOwnerNames ? entity.Owner : string.Empty));
+                if (entity.DeathAgeSec.HasValue)
+                {
+                    json.Append(",\"deathAgeSec\":").Append(JsonWriter.Number(
+                        Math.Round(entity.DeathAgeSec.Value, 1)));
+                }
+            }
+            else if (string.Equals(entity.Group, "ward", StringComparison.Ordinal))
+            {
+                json.Append(",\"owner\":").Append(JsonWriter.Quote(
+                    showOwnerNames ? entity.Owner : string.Empty));
+                json.Append(",\"wardEnabled\":").Append(
+                    entity.WardEnabled == true ? "true" : "false");
+                json.Append(",\"wardRadius\":").Append(JsonWriter.Number(
+                    entity.WardRadius.GetValueOrDefault()));
+            }
+            else if (string.Equals(entity.Group, "bed", StringComparison.Ordinal))
+            {
+                json.Append(",\"owner\":").Append(JsonWriter.Quote(
+                    showOwnerNames ? entity.Owner : string.Empty));
+            }
+            else if (string.Equals(entity.Group, "creatures", StringComparison.Ordinal))
+            {
+                json.Append(",\"name\":").Append(JsonWriter.Quote(entity.Name));
+                if (entity.Level.HasValue)
+                {
+                    int level = Math.Max(1, entity.Level.Value);
+                    json.Append(",\"level\":").Append(
+                        level.ToString(CultureInfo.InvariantCulture));
+                    json.Append(",\"stars\":").Append(
+                        Math.Max(0, level - 1).ToString(CultureInfo.InvariantCulture));
+                }
+            }
+
+            json.Append('}');
+            needsEntityComma = true;
+        }
+
+        json.Append("],\"event\":");
+        AppendRaidEventJson(
+            json,
+            EventsAvailable(viewLevel) ? snapshot.Event : null);
+        json.Append('}');
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServeEntityFocus(HttpListenerResponse response, string requestedId)
+    {
+        EntityFocusSnapshot focus = _getEntityFocusSnapshot();
+        bool matches = string.Equals(focus.Id, requestedId, StringComparison.Ordinal);
+        long unixMs = matches
+            ? focus.UnixMs
+            : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var json = new StringBuilder(192);
+        // Focus responses contain one normal entity object so clients do not merge scan payloads.
+        json.Append("{\"focus\":{");
+        json.Append("\"id\":").Append(JsonWriter.Quote(requestedId));
+        json.Append(",\"found\":").Append(matches && focus.Found ? "true" : "false");
+        if (matches && focus.Found)
+        {
+            json.Append(",\"group\":").Append(JsonWriter.Quote(focus.Group));
+            json.Append(",\"prefab\":").Append(JsonWriter.Quote(focus.Prefab));
+            json.Append(",\"x\":").Append(JsonWriter.Number(focus.X));
+            json.Append(",\"y\":").Append(JsonWriter.Number(focus.Y));
+            json.Append(",\"z\":").Append(JsonWriter.Number(focus.Z));
+            json.Append(",\"rotYDeg\":").Append(JsonWriter.Number(
+                Math.Round(focus.RotYDeg, 1)));
+            if (!string.IsNullOrEmpty(focus.Tag))
+            {
+                json.Append(",\"tag\":").Append(JsonWriter.Quote(focus.Tag));
+            }
+        }
+
+        json.Append(",\"unixMs\":").Append(unixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append("}}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private static void AppendRaidEventJson(StringBuilder json, RaidEventSnapshot? activeEvent)
+    {
+        if (activeEvent == null)
+        {
+            json.Append("null");
+            return;
+        }
+
+        json.Append('{');
+        json.Append("\"name\":").Append(JsonWriter.Quote(activeEvent.Name));
+        json.Append(",\"x\":").Append(JsonWriter.Number(activeEvent.X));
+        json.Append(",\"z\":").Append(JsonWriter.Number(activeEvent.Z));
+        json.Append(",\"radius\":").Append(JsonWriter.Number(activeEvent.Radius));
+        json.Append(",\"elapsed\":").Append(JsonWriter.Number(activeEvent.Elapsed));
+        json.Append(",\"duration\":").Append(JsonWriter.Number(activeEvent.Duration));
+        json.Append('}');
+    }
+
+    private void ServePois(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        ViewLevel viewLevel)
+    {
+        string requestedGroup = (request.QueryString["group"] ?? string.Empty)
+            .Trim()
+            .ToLowerInvariant();
+        if (!string.IsNullOrEmpty(requestedGroup))
+        {
+            ServePoiGroup(request, response, viewLevel, requestedGroup);
+            return;
+        }
+
+        PoiCatalog catalog = _getPoiCatalog();
+        ResourcePoiMapSnapshot resourceSnapshot = _getResourcePoiSnapshot();
+        PlayerBaseMapSnapshot baseSnapshot = _getPlayerBaseSnapshot();
+        List<PlayerGhostEntry>? visibleGhosts = AllowsPoiGroup(viewLevel, "ghosts")
+            ? GetVisibleGhosts(viewLevel)
+            : null;
+        IReadOnlyList<PoiSnapshot> pois = catalog.ServedPois;
+        IReadOnlyList<PoiGroupDefinition> definitions = PoiGroups.All;
+        FogMaskSnapshot fogSnapshot = _fogTracker.Snapshot;
+        bool hideUnexplored = GetEffectiveFogHide(viewLevel, request);
+        long unixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var json = new StringBuilder(128 + (pois.Count * 96));
+        var deferredGroups = new HashSet<string>(StringComparer.Ordinal);
+        json.Append("{\"unixMs\":");
+        json.Append(unixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"groups\":[");
+        bool needsComma = false;
+        for (int index = 0; index < definitions.Count; index++)
+        {
+            PoiGroupDefinition definition = definitions[index];
+            if (!AllowsPoiGroup(viewLevel, definition.Key) ||
+                (definition.Resource && !_config.ResourceLayers))
+            {
+                continue;
+            }
+
+            if (needsComma)
+            {
+                json.Append(',');
+            }
+
+            int count = hideUnexplored
+                ? CountExploredPois(pois, definition.Key, fogSnapshot)
+                : catalog.GetCount(definition.Key);
+            int cap = 0;
+            bool truncated = false;
+            if (string.Equals(definition.Key, "ghosts", StringComparison.Ordinal))
+            {
+                count = visibleGhosts == null ? 0 : hideUnexplored
+                    ? visibleGhosts.FindAll(ghost => FogTracker.IsExplored(fogSnapshot, ghost.X, ghost.Z)).Count
+                    : visibleGhosts.Count;
+            }
+            else if (string.Equals(definition.Key, "bases", StringComparison.Ordinal))
+            {
+                count = hideUnexplored
+                    ? Array.FindAll(baseSnapshot.Bases, entry => FogTracker.IsExplored(fogSnapshot, entry.X, entry.Z)).Length
+                    : baseSnapshot.Count;
+                cap = PlayerBaseTracker.MaximumBases;
+                truncated = baseSnapshot.OutputTruncated;
+            }
+            else if (definition.Resource &&
+                resourceSnapshot.TryGetGroup(
+                    definition.Key,
+                    out ResourcePoiGroupSnapshot? resourceGroup) &&
+                resourceGroup != null)
+            {
+                count = hideUnexplored
+                    ? Array.FindAll(resourceGroup.Entries,
+                        poi => FogTracker.IsExplored(fogSnapshot, poi.X, poi.Z)).Length
+                    : resourceGroup.Count;
+                cap = resourceGroup.Cap;
+                truncated = resourceGroup.Truncated;
+            }
+
+            bool inline = !string.Equals(
+                              definition.Key,
+                              "ghosts",
+                              StringComparison.Ordinal) &&
+                          !string.Equals(
+                              definition.Key,
+                              "bases",
+                              StringComparison.Ordinal) &&
+                          !definition.Resource &&
+                          count <= MaximumInlineLocationPoisPerGroup;
+            if (!inline)
+            {
+                deferredGroups.Add(definition.Key);
+            }
+
+            json.Append('{');
+            json.Append("\"key\":").Append(JsonWriter.Quote(definition.Key));
+            json.Append(",\"label\":").Append(JsonWriter.Quote(definition.Label));
+            json.Append(",\"category\":").Append(JsonWriter.Quote(definition.Category));
+            json.Append(",\"count\":").Append(count.ToString(CultureInfo.InvariantCulture));
+            if (truncated)
+            {
+                json.Append(",\"cap\":").Append(cap.ToString(CultureInfo.InvariantCulture));
+                json.Append(",\"truncated\":true");
+            }
+            json.Append(",\"inline\":").Append(inline ? "true" : "false");
+            bool surveyed = definition.Resource ||
+                            string.Equals(definition.Key, "bases", StringComparison.Ordinal);
+            json.Append(",\"resource\":").Append(surveyed ? "true" : "false");
+            if (surveyed)
+            {
+                json.Append(",\"scanUnixMs\":").Append(
+                    (string.Equals(definition.Key, "bases", StringComparison.Ordinal)
+                        ? baseSnapshot.LastScanUnixMs
+                        : resourceSnapshot.LastScanUnixMs).ToString(CultureInfo.InvariantCulture));
+            }
+
+            json.Append('}');
+            needsComma = true;
+        }
+
+        json.Append("],\"pois\":[");
+        needsComma = false;
+        for (int index = 0; index < pois.Count; index++)
+        {
+            PoiSnapshot poi = pois[index];
+            if (!AllowsPoiGroup(viewLevel, poi.Group))
+            {
+                continue;
+            }
+
+            if (hideUnexplored && !FogTracker.IsExplored(fogSnapshot, poi.X, poi.Z))
+            {
+                continue;
+            }
+
+            if (deferredGroups.Contains(poi.Group))
+            {
+                continue;
+            }
+
+            if (needsComma)
+            {
+                json.Append(',');
+            }
+
+            json.Append('{');
+            json.Append("\"name\":").Append(JsonWriter.Quote(poi.Name));
+            json.Append(",\"group\":").Append(JsonWriter.Quote(poi.Group));
+            json.Append(",\"x\":").Append(JsonWriter.NumberOneDecimal(poi.X));
+            json.Append(",\"z\":").Append(JsonWriter.NumberOneDecimal(poi.Z));
+            json.Append(",\"placed\":").Append(poi.Placed ? "true" : "false");
+            json.Append(",\"explored\":").Append(
+                FogTracker.IsExplored(fogSnapshot, poi.X, poi.Z) ? "true" : "false");
+            json.Append('}');
+            needsComma = true;
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServePoiGroup(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        ViewLevel viewLevel,
+        string requestedGroup)
+    {
+        if (!PoiGroups.TryGet(requestedGroup, out PoiGroupDefinition? definition) ||
+            definition == null ||
+            !AllowsPoiGroup(viewLevel, definition.Key) ||
+            (definition.Resource && !_config.ResourceLayers))
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        if (!definition.Resource)
+        {
+            if (string.Equals(definition.Key, "bases", StringComparison.Ordinal))
+            {
+                ServePlayerBaseGroup(response, GetEffectiveFogHide(viewLevel, request));
+                return;
+            }
+
+            if (string.Equals(definition.Key, "ghosts", StringComparison.Ordinal))
+            {
+                ServeGhostPoiGroup(response, viewLevel, GetEffectiveFogHide(viewLevel, request));
+                return;
+            }
+
+            ServeLocationPoiGroup(response, definition, GetEffectiveFogHide(viewLevel, request));
+            return;
+        }
+
+        ServeResourcePoiGroup(response, definition, GetEffectiveFogHide(viewLevel, request));
+    }
+
+    private void ServePlayerBaseGroup(HttpListenerResponse response, bool hideUnexplored)
+    {
+        _noteBasesRequested();
+        PlayerBaseMapSnapshot snapshot = _getPlayerBaseSnapshot();
+        FogMaskSnapshot fogSnapshot = _fogTracker.Snapshot;
+        PlayerBaseEntry[] bases = hideUnexplored
+            ? Array.FindAll(snapshot.Bases, entry => FogTracker.IsExplored(fogSnapshot, entry.X, entry.Z))
+            : snapshot.Bases;
+        long nowUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        long scanAgeMs = snapshot.LastScanUnixMs == 0L
+            ? long.MaxValue
+            : Math.Max(0L, nowUnixMs - snapshot.LastScanUnixMs);
+        bool scanning = snapshot.Scanning ||
+                        snapshot.LastScanUnixMs == 0L ||
+                        scanAgeMs >= PlayerBaseTracker.CacheMilliseconds;
+        var json = new StringBuilder(160 + (bases.Length * 96));
+        json.Append("{\"group\":\"bases\",\"label\":\"Bases\",\"count\":");
+        json.Append(bases.Length.ToString(CultureInfo.InvariantCulture));
+        if (snapshot.OutputTruncated)
+        {
+            json.Append(",\"cap\":").Append(
+                PlayerBaseTracker.MaximumBases.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"truncated\":true");
+        }
+        if (snapshot.PiecesTruncated)
+        {
+            json.Append(",\"pieceCap\":").Append(
+                PlayerBaseTracker.MaximumPiecePositions.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"piecesTruncated\":true");
+        }
+        json.Append(",\"resource\":true");
+        json.Append(",\"scanUnixMs\":").Append(
+            snapshot.LastScanUnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"scanning\":").Append(scanning ? "true" : "false");
+        if (scanning)
+        {
+            int scanProgress = snapshot.Scanning ? snapshot.ScanProgress : 0;
+            json.Append(",\"scanProgress\":").Append(
+                scanProgress.ToString(CultureInfo.InvariantCulture));
+            if (snapshot.Scanning && snapshot.ScanEtaSeconds >= 0)
+            {
+                json.Append(",\"scanEtaSeconds\":").Append(
+                    snapshot.ScanEtaSeconds.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+        json.Append(",\"pois\":[");
+        for (int index = 0; index < bases.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            PlayerBaseEntry playerBase = bases[index];
+            json.Append('{');
+            json.Append("\"id\":").Append(JsonWriter.Quote(playerBase.Id));
+            json.Append(",\"x\":").Append(JsonWriter.NumberOneDecimal(playerBase.X));
+            json.Append(",\"z\":").Append(JsonWriter.NumberOneDecimal(playerBase.Z));
+            json.Append(",\"radius\":").Append(JsonWriter.NumberOneDecimal(playerBase.Radius));
+            json.Append(",\"pieces\":").Append(
+                playerBase.Pieces.ToString(CultureInfo.InvariantCulture));
+            json.Append('}');
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServeGhostPoiGroup(HttpListenerResponse response, ViewLevel viewLevel, bool hideUnexplored)
+    {
+        List<PlayerGhostEntry> ghosts = GetVisibleGhosts(viewLevel);
+        if (hideUnexplored)
+        {
+            FogMaskSnapshot fog = _fogTracker.Snapshot;
+            ghosts.RemoveAll(ghost => !FogTracker.IsExplored(fog, ghost.X, ghost.Z));
+        }
+        var json = new StringBuilder(128 + (ghosts.Count * 160));
+        json.Append("{\"group\":\"ghosts\",\"label\":\"Last seen\",\"count\":");
+        json.Append(ghosts.Count.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"resource\":false,\"scanning\":false,\"pois\":[");
+        for (int index = 0; index < ghosts.Count; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            PlayerGhostEntry ghost = ghosts[index];
+            json.Append('{');
+            json.Append("\"name\":").Append(JsonWriter.Quote(
+                ShowsOwnerNames(viewLevel) ? ghost.CharacterName : string.Empty));
+            json.Append(",\"x\":").Append(JsonWriter.NumberOneDecimal(ghost.X));
+            json.Append(",\"z\":").Append(JsonWriter.NumberOneDecimal(ghost.Z));
+            json.Append(",\"lastSeenUnixMs\":").Append(
+                ghost.LastSeenUnixMs.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"lastSessionSeconds\":").Append(
+                ghost.LastSessionSeconds.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"totalPlaySeconds\":").Append(
+                ghost.TotalPlaySeconds.ToString(CultureInfo.InvariantCulture));
+            json.Append('}');
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private List<PlayerGhostEntry> GetVisibleGhosts(ViewLevel viewLevel)
+    {
+        var ghosts = new List<PlayerGhostEntry>();
+        if (!AllowsPoiGroup(viewLevel, "ghosts"))
+        {
+            return ghosts;
+        }
+
+        _activityLog.CopyGhosts(ghosts);
+        LiveMapPlayerSnapshot[] onlinePlayers = _getSnapshot().Players;
+        var onlineNames = new HashSet<string>(StringComparer.Ordinal);
+        for (int index = 0; index < onlinePlayers.Length; index++)
+        {
+            string name = (onlinePlayers[index].Name ?? string.Empty).Trim();
+            if (name.Length > 0)
+            {
+                onlineNames.Add(name);
+            }
+        }
+
+        ghosts.RemoveAll(ghost =>
+            onlineNames.Contains(ghost.CharacterName) ||
+            (viewLevel != ViewLevel.Admin &&
+             _respectInGameVisibility &&
+             !ghost.PositionShared));
+        ghosts.Sort((left, right) =>
+        {
+            int newestFirst = right.LastSeenUnixMs.CompareTo(left.LastSeenUnixMs);
+            return newestFirst != 0
+                ? newestFirst
+                : string.CompareOrdinal(left.CharacterName, right.CharacterName);
+        });
+        return ghosts;
+    }
+
+    private void ServeLocationPoiGroup(
+        HttpListenerResponse response,
+        PoiGroupDefinition definition,
+        bool hideUnexplored)
+    {
+        PoiCatalog catalog = _getPoiCatalog();
+        IReadOnlyList<PoiSnapshot> catalogPois = catalog.ServedPois;
+        FogMaskSnapshot fogSnapshot = _fogTracker.Snapshot;
+        int count = hideUnexplored
+            ? CountExploredPois(catalogPois, definition.Key, fogSnapshot)
+            : catalog.GetCount(definition.Key);
+        var json = new StringBuilder(128 + (count * 96));
+        json.Append("{\"group\":").Append(JsonWriter.Quote(definition.Key));
+        json.Append(",\"label\":").Append(JsonWriter.Quote(definition.Label));
+        json.Append(",\"count\":").Append(count.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"resource\":false,\"scanning\":false,\"pois\":[");
+        bool needsComma = false;
+        for (int index = 0; index < catalogPois.Count; index++)
+        {
+            PoiSnapshot poi = catalogPois[index];
+            if (!string.Equals(poi.Group, definition.Key, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            bool explored = FogTracker.IsExplored(fogSnapshot, poi.X, poi.Z);
+            if (hideUnexplored && !explored)
+            {
+                continue;
+            }
+
+            if (needsComma)
+            {
+                json.Append(',');
+            }
+
+            json.Append('{');
+            json.Append("\"name\":").Append(JsonWriter.Quote(poi.Name));
+            json.Append(",\"group\":").Append(JsonWriter.Quote(poi.Group));
+            json.Append(",\"x\":").Append(JsonWriter.NumberOneDecimal(poi.X));
+            json.Append(",\"z\":").Append(JsonWriter.NumberOneDecimal(poi.Z));
+            json.Append(",\"placed\":").Append(poi.Placed ? "true" : "false");
+            json.Append(",\"explored\":").Append(explored ? "true" : "false");
+            json.Append('}');
+            needsComma = true;
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private static int CountExploredPois(
+        IReadOnlyList<PoiSnapshot> pois,
+        string group,
+        FogMaskSnapshot fogSnapshot)
+    {
+        int count = 0;
+        for (int index = 0; index < pois.Count; index++)
+        {
+            PoiSnapshot poi = pois[index];
+            if (string.Equals(poi.Group, group, StringComparison.Ordinal) &&
+                FogTracker.IsExplored(fogSnapshot, poi.X, poi.Z))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private void ServeResourcePoiGroup(
+        HttpListenerResponse response,
+        PoiGroupDefinition definition,
+        bool hideUnexplored)
+    {
+        _noteResourcesRequested();
+        ResourcePoiMapSnapshot snapshot = _getResourcePoiSnapshot();
+        snapshot.TryGetGroup(definition.Key, out ResourcePoiGroupSnapshot? group);
+        ResourcePoiEntry[] pois = group?.Entries ?? Array.Empty<ResourcePoiEntry>();
+        FogMaskSnapshot fogSnapshot = _fogTracker.Snapshot;
+        if (hideUnexplored)
+        {
+            pois = Array.FindAll(pois, poi => FogTracker.IsExplored(fogSnapshot, poi.X, poi.Z));
+        }
+        int count = hideUnexplored ? pois.Length : group?.Count ?? 0;
+        long nowUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        long scanAgeMs = snapshot.LastScanUnixMs == 0L
+            ? long.MaxValue
+            : Math.Max(0L, nowUnixMs - snapshot.LastScanUnixMs);
+        bool scanning = snapshot.Scanning ||
+                        snapshot.LastScanUnixMs == 0L ||
+                        scanAgeMs >= ResourceRefreshMilliseconds;
+        var json = new StringBuilder(128 + (pois.Length * 96));
+        json.Append("{\"group\":").Append(JsonWriter.Quote(definition.Key));
+        json.Append(",\"label\":").Append(JsonWriter.Quote(definition.Label));
+        json.Append(",\"count\":").Append(count.ToString(CultureInfo.InvariantCulture));
+        if (group != null && group.Truncated)
+        {
+            json.Append(",\"cap\":").Append(
+                group.Cap.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"truncated\":true");
+        }
+        json.Append(",\"resource\":true");
+        json.Append(",\"scanUnixMs\":").Append(
+            snapshot.LastScanUnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"scanning\":").Append(scanning ? "true" : "false");
+        if (scanning)
+        {
+            int scanProgress = snapshot.Scanning ? snapshot.ScanProgress : 0;
+            json.Append(",\"scanProgress\":").Append(
+                scanProgress.ToString(CultureInfo.InvariantCulture));
+            if (snapshot.Scanning && snapshot.ScanEtaSeconds >= 0)
+            {
+                json.Append(",\"scanEtaSeconds\":").Append(
+                    snapshot.ScanEtaSeconds.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+        json.Append(",\"pois\":[");
+        for (int index = 0; index < pois.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            ResourcePoiEntry poi = pois[index];
+            json.Append('{');
+            json.Append("\"name\":").Append(JsonWriter.Quote(poi.Name));
+            json.Append(",\"group\":").Append(JsonWriter.Quote(poi.Group));
+            json.Append(",\"x\":").Append(JsonWriter.NumberOneDecimal(poi.X));
+            json.Append(",\"z\":").Append(JsonWriter.NumberOneDecimal(poi.Z));
+            json.Append(",\"explored\":").Append(
+                FogTracker.IsExplored(fogSnapshot, poi.X, poi.Z) ? "true" : "false");
+            if (poi.Count > 1 || poi.Available >= 0)
+            {
+                json.Append(",\"count\":").Append(
+                    poi.Count.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (!string.IsNullOrEmpty(poi.State))
+            {
+                json.Append(",\"state\":").Append(JsonWriter.Quote(poi.State));
+            }
+
+            if (poi.MinedPct > 0)
+            {
+                json.Append(",\"minedPct\":").Append(
+                    poi.MinedPct.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (poi.Available >= 0)
+            {
+                json.Append(",\"available\":").Append(
+                    poi.Available.ToString(CultureInfo.InvariantCulture));
+            }
+
+            json.Append('}');
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServeRegions(HttpListenerRequest request, HttpListenerResponse response, ViewLevel viewLevel)
+    {
+        BiomeRegionSnapshot[] regions = _renderer.Regions;
+        bool hideUnexplored = GetEffectiveFogHide(viewLevel, request);
+        FogMaskSnapshot fogSnapshot = hideUnexplored ? _fogTracker.Snapshot : FogMaskSnapshot.Empty;
+        var json = new StringBuilder(16 + (regions.Length * 96));
+        json.Append("{\"regions\":[");
+        bool needsComma = false;
+        for (int index = 0; index < regions.Length; index++)
+        {
+            BiomeRegionSnapshot region = regions[index];
+            if (hideUnexplored && !FogTracker.IsExplored(fogSnapshot, region.X, region.Z))
+            {
+                continue;
+            }
+
+            if (needsComma)
+            {
+                json.Append(',');
+            }
+
+            needsComma = true;
+            json.Append('{');
+            json.Append("\"name\":").Append(JsonWriter.Quote(region.Name));
+            json.Append(",\"biome\":").Append(JsonWriter.Quote(region.Biome));
+            json.Append(",\"x\":").Append(JsonWriter.NumberOneDecimal(region.X));
+            json.Append(",\"z\":").Append(JsonWriter.NumberOneDecimal(region.Z));
+            json.Append(",\"area\":").Append(
+                region.Area.ToString(CultureInfo.InvariantCulture));
+            json.Append('}');
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServePins(HttpListenerResponse response, ViewLevel viewLevel)
+    {
+        if (viewLevel == ViewLevel.Public && !_config.PublicPins)
+        {
+            WriteJson(response, HttpStatusCode.OK, "{\"pins\":[]}");
+            return;
+        }
+
+        MapTablePin[] pins = _getMapTableSnapshot().Pins;
+        var json = new StringBuilder(16 + (pins.Length * 128));
+        json.Append("{\"pins\":[");
+        for (int index = 0; index < pins.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            MapTablePin pin = pins[index];
+            json.Append('{');
+            json.Append("\"name\":").Append(JsonWriter.Quote(pin.Name));
+            json.Append(",\"x\":").Append(JsonWriter.Number(pin.X));
+            json.Append(",\"z\":").Append(JsonWriter.Number(pin.Z));
+            json.Append(",\"type\":").Append(pin.Type.ToString(CultureInfo.InvariantCulture));
+            json.Append(",\"icon\":").Append(JsonWriter.Quote(pin.Icon));
+            if (viewLevel != ViewLevel.Public)
+            {
+                string author = viewLevel == ViewLevel.Shared && IsPlatformIdentifier(pin.Author)
+                    ? "a viking"
+                    : pin.Author;
+                json.Append(",\"author\":").Append(JsonWriter.Quote(author));
+            }
+            json.Append(",\"checked\":").Append(pin.IsChecked ? "true" : "false");
+            json.Append('}');
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private static bool IsPlatformIdentifier(string author)
+    {
+        string candidate = author.TrimStart();
+        return candidate.StartsWith("Steam_", StringComparison.OrdinalIgnoreCase) ||
+               candidate.StartsWith("XBL_", StringComparison.OrdinalIgnoreCase) ||
+               candidate.StartsWith("PSN_", StringComparison.OrdinalIgnoreCase) ||
+               candidate.StartsWith("NSA_", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ServeWebPins(HttpListenerResponse response, ViewLevel viewLevel)
+    {
+        if (!CanReadWebPins(viewLevel))
+        {
+            WriteJson(response, HttpStatusCode.Forbidden, "{\"error\":\"forbidden\"}");
+            return;
+        }
+
+        WebPinStore? store = _getWebPinStore();
+        if (store == null)
+        {
+            WriteJson(response, HttpStatusCode.ServiceUnavailable, "{\"error\":\"not ready\"}");
+            return;
+        }
+
+        WebPinEntry[] pins;
+        long revision;
+        do
+        {
+            revision = store.Revision;
+            pins = store.Snapshot();
+        }
+        while (revision != store.Revision);
+
+        var json = new StringBuilder(64 + (pins.Length * 224));
+        json.Append("{\"revision\":").Append(revision.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"sharedEditing\":").Append(
+            _config.SharedPinEditing ? "true" : "false");
+        json.Append(",\"pins\":[");
+        for (int index = 0; index < pins.Length; index++)
+        {
+            if (index > 0)
+            {
+                json.Append(',');
+            }
+
+            AppendWebPinJson(json, pins[index]);
+        }
+
+        json.Append("]}");
+        WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    private void ServeCreateWebPin(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        ViewLevel viewLevel)
+    {
+        if (!TryAuthorizeWebPinWrite(response, viewLevel) ||
+            !TryAcceptWebPinWrite(request, response))
+        {
+            return;
+        }
+
+        WebPinStore? store = _getWebPinStore();
+        if (store == null)
+        {
+            WriteWebPinError(response, HttpStatusCode.ServiceUnavailable, "not ready");
+            return;
+        }
+
+        if (!TryReadRequestBody(request, out string json, out bool tooLarge))
+        {
+            WriteWebPinError(
+                response,
+                tooLarge ? HttpStatusCode.RequestEntityTooLarge : HttpStatusCode.BadRequest,
+                tooLarge ? "payload too large" : "bad request");
+            return;
+        }
+
+        float x = float.NaN;
+        float z = float.NaN;
+        TryReadJsonNumberProperty(json, "x", out x);
+        TryReadJsonNumberProperty(json, "z", out z);
+
+        string icon = string.Empty;
+        if (TryFindJsonPropertyValue(json, "icon", out _) &&
+            !TryReadJsonStringProperty(json, "icon", out icon))
+        {
+            WriteWebPinError(response, HttpStatusCode.BadRequest, "invalid icon");
+            return;
+        }
+
+        string label = string.Empty;
+        if (TryFindJsonPropertyValue(json, "label", out _) &&
+            !TryReadJsonStringProperty(json, "label", out label))
+        {
+            WriteWebPinError(response, HttpStatusCode.BadRequest, "invalid label");
+            return;
+        }
+
+        string bodyAuthor = string.Empty;
+        if (TryFindJsonPropertyValue(json, "author", out _) &&
+            !TryReadJsonStringProperty(json, "author", out bodyAuthor))
+        {
+            WriteWebPinError(response, HttpStatusCode.BadRequest, "invalid author");
+            return;
+        }
+
+        string? operatorHeader = request.Headers["X-Operator"];
+        string author = WebPinStore.SanitizeAuthor(operatorHeader ?? bodyAuthor);
+        if (viewLevel == ViewLevel.Admin && author.Length == 0)
+        {
+            author = "Admin";
+        }
+
+        if (!store.TryCreate(x, z, icon, label, author, out WebPinEntry? pin, out string error))
+        {
+            WriteWebPinError(response, HttpStatusCode.BadRequest, error);
+            return;
+        }
+
+        var responseJson = new StringBuilder(256);
+        responseJson.Append("{\"ok\":true,\"pin\":");
+        AppendWebPinJson(responseJson, pin!);
+        responseJson.Append(",\"revision\":").Append(
+            store.Revision.ToString(CultureInfo.InvariantCulture));
+        responseJson.Append('}');
+        WriteJson(response, HttpStatusCode.OK, responseJson.ToString());
+    }
+
+    private void ServeUpdateWebPin(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        ViewLevel viewLevel,
+        string id)
+    {
+        if (!TryAuthorizeWebPinWrite(response, viewLevel) ||
+            !TryAcceptWebPinWrite(request, response))
+        {
+            return;
+        }
+
+        WebPinStore? store = _getWebPinStore();
+        if (store == null)
+        {
+            WriteWebPinError(response, HttpStatusCode.ServiceUnavailable, "not ready");
+            return;
+        }
+
+        if (!TryReadRequestBody(request, out string json, out bool tooLarge))
+        {
+            WriteWebPinError(
+                response,
+                tooLarge ? HttpStatusCode.RequestEntityTooLarge : HttpStatusCode.BadRequest,
+                tooLarge ? "payload too large" : "bad request");
+            return;
+        }
+
+        bool hasX = TryFindJsonPropertyValue(json, "x", out _);
+        bool hasZ = TryFindJsonPropertyValue(json, "z", out _);
+        float? x = null;
+        float? z = null;
+        float parsedX = 0f;
+        float parsedZ = 0f;
+        if (hasX != hasZ ||
+            (hasX && (!TryReadJsonNumberProperty(json, "x", out parsedX) ||
+                      !TryReadJsonNumberProperty(json, "z", out parsedZ))))
+        {
+            WriteWebPinError(response, HttpStatusCode.BadRequest, "invalid coordinates");
+            return;
+        }
+
+        if (hasX)
+        {
+            x = parsedX;
+            z = parsedZ;
+        }
+
+        string? icon = null;
+        if (TryFindJsonPropertyValue(json, "icon", out _))
+        {
+            if (!TryReadJsonStringProperty(json, "icon", out string parsedIcon))
+            {
+                WriteWebPinError(response, HttpStatusCode.BadRequest, "invalid icon");
+                return;
+            }
+
+            icon = parsedIcon;
+        }
+
+        string? label = null;
+        if (TryFindJsonPropertyValue(json, "label", out _))
+        {
+            if (!TryReadJsonStringProperty(json, "label", out string parsedLabel))
+            {
+                WriteWebPinError(response, HttpStatusCode.BadRequest, "invalid label");
+                return;
+            }
+
+            label = parsedLabel;
+        }
+
+        bool? isChecked = null;
+        if (TryFindJsonPropertyValue(json, "checked", out _))
+        {
+            if (!TryReadJsonBooleanProperty(json, "checked", out bool parsedChecked))
+            {
+                WriteWebPinError(response, HttpStatusCode.BadRequest, "invalid checked");
+                return;
+            }
+
+            isChecked = parsedChecked;
+        }
+
+        string requesterAuthor = WebPinStore.SanitizeAuthor(request.Headers["X-Operator"]);
+        bool isAdmin = viewLevel == ViewLevel.Admin;
+        if (!store.TryUpdate(
+                id,
+                x,
+                z,
+                icon,
+                label,
+                isChecked,
+                requesterAuthor,
+                isAdmin,
+                out WebPinEntry? pin,
+                out string error))
+        {
+            WriteWebPinStoreError(response, error);
+            return;
+        }
+
+        var responseJson = new StringBuilder(256);
+        responseJson.Append("{\"ok\":true,\"pin\":");
+        AppendWebPinJson(responseJson, pin!);
+        responseJson.Append(",\"revision\":").Append(
+            store.Revision.ToString(CultureInfo.InvariantCulture));
+        responseJson.Append('}');
+        WriteJson(response, HttpStatusCode.OK, responseJson.ToString());
+    }
+
+    private void ServeDeleteWebPin(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        ViewLevel viewLevel,
+        string id)
+    {
+        if (!TryAuthorizeWebPinWrite(response, viewLevel) ||
+            !TryAcceptWebPinWrite(request, response))
+        {
+            return;
+        }
+
+        WebPinStore? store = _getWebPinStore();
+        if (store == null)
+        {
+            WriteWebPinError(response, HttpStatusCode.ServiceUnavailable, "not ready");
+            return;
+        }
+
+        string requesterAuthor = WebPinStore.SanitizeAuthor(request.Headers["X-Operator"]);
+        if (!store.TryDelete(
+                id,
+                requesterAuthor,
+                viewLevel == ViewLevel.Admin,
+                out string error))
+        {
+            WriteWebPinStoreError(response, error);
+            return;
+        }
+
+        string json = "{\"ok\":true,\"revision\":" +
+                      store.Revision.ToString(CultureInfo.InvariantCulture) + "}";
+        WriteJson(response, HttpStatusCode.OK, json);
+    }
+
+    private bool CanReadWebPins(ViewLevel viewLevel)
+    {
+        return viewLevel != ViewLevel.Public || _config.PublicWebPins;
+    }
+
+    private bool TryAuthorizeWebPinWrite(
+        HttpListenerResponse response,
+        ViewLevel viewLevel)
+    {
+        if (viewLevel == ViewLevel.Admin ||
+            (viewLevel == ViewLevel.Shared && _config.SharedPinEditing))
+        {
+            return true;
+        }
+
+        WriteWebPinError(response, HttpStatusCode.Forbidden, WebPinStore.ErrorForbidden);
+        return false;
+    }
+
+    private bool TryAcceptWebPinWrite(
+        HttpListenerRequest request,
+        HttpListenerResponse response)
+    {
+        string sourceAddress = request.RemoteEndPoint?.Address.ToString() ?? "unknown";
+        long nowTicks = DateTime.UtcNow.Ticks;
+        bool rateLimited = false;
+        lock (_webPinWriteRateLock)
+        {
+            if (_webPinWriteLastPruneTicks == 0L ||
+                nowTicks < _webPinWriteLastPruneTicks ||
+                nowTicks - _webPinWriteLastPruneTicks >= WebPinWritePruneTicks)
+            {
+                List<string>? expiredAddresses = null;
+                foreach (KeyValuePair<string, (long WindowStartTicks, int Count)> pair in
+                         _webPinWriteRates)
+                {
+                    if (nowTicks < pair.Value.WindowStartTicks ||
+                        nowTicks - pair.Value.WindowStartTicks >= WebPinWritePruneTicks)
+                    {
+                        expiredAddresses ??= new List<string>();
+                        expiredAddresses.Add(pair.Key);
+                    }
+                }
+
+                if (expiredAddresses != null)
+                {
+                    for (int index = 0; index < expiredAddresses.Count; index++)
+                    {
+                        _webPinWriteRates.Remove(expiredAddresses[index]);
+                    }
+                }
+
+                _webPinWriteLastPruneTicks = nowTicks;
+            }
+
+            if (_webPinWriteRates.TryGetValue(
+                    sourceAddress,
+                    out (long WindowStartTicks, int Count) window) &&
+                nowTicks >= window.WindowStartTicks &&
+                nowTicks - window.WindowStartTicks < WebPinWriteWindowTicks)
+            {
+                if (window.Count >= MaximumWebPinWritesPerSecond)
+                {
+                    rateLimited = true;
+                }
+                else
+                {
+                    _webPinWriteRates[sourceAddress] =
+                        (window.WindowStartTicks, window.Count + 1);
+                }
+            }
+            else
+            {
+                _webPinWriteRates[sourceAddress] = (nowTicks, 1);
+            }
+        }
+
+        if (!rateLimited)
+        {
+            return true;
+        }
+
+        WriteWebPinError(response, (HttpStatusCode)429, "rate limited");
+        return false;
+    }
+
+    private static bool TryGetWebPinId(string path, out string id)
+    {
+        const string prefix = "/api/webpins/";
+        id = string.Empty;
+        if (!path.StartsWith(prefix, StringComparison.Ordinal) || path.Length == prefix.Length)
+        {
+            return false;
+        }
+
+        id = path.Substring(prefix.Length);
+        return id.IndexOf('/') < 0;
+    }
+
+    private static void AppendWebPinJson(StringBuilder json, WebPinEntry pin)
+    {
+        json.Append('{');
+        json.Append("\"id\":").Append(JsonWriter.Quote(pin.Id));
+        json.Append(",\"x\":").Append(JsonWriter.Number(pin.X));
+        json.Append(",\"z\":").Append(JsonWriter.Number(pin.Z));
+        json.Append(",\"icon\":").Append(JsonWriter.Quote(pin.Icon));
+        json.Append(",\"label\":").Append(JsonWriter.Quote(pin.Label));
+        json.Append(",\"author\":").Append(JsonWriter.Quote(pin.Author));
+        json.Append(",\"checked\":").Append(pin.Checked ? "true" : "false");
+        json.Append(",\"createdUnixMs\":").Append(
+            pin.CreatedUnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append(",\"updatedUnixMs\":").Append(
+            pin.UpdatedUnixMs.ToString(CultureInfo.InvariantCulture));
+        json.Append('}');
+    }
+
+    private static void WriteWebPinStoreError(HttpListenerResponse response, string error)
+    {
+        HttpStatusCode status = string.Equals(error, WebPinStore.ErrorNotFound, StringComparison.Ordinal)
+            ? HttpStatusCode.NotFound
+            : string.Equals(error, WebPinStore.ErrorForbidden, StringComparison.Ordinal)
+                ? HttpStatusCode.Forbidden
+                : HttpStatusCode.BadRequest;
+        WriteWebPinError(response, status, error);
+    }
+
+    private static void WriteWebPinError(
+        HttpListenerResponse response,
+        HttpStatusCode status,
+        string error)
+    {
+        WriteJson(
+            response,
+            status,
+            "{\"ok\":false,\"error\":" + JsonWriter.Quote(error) + "}");
+    }
+
+    private void ServeTile(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        string relativePath)
+    {
+        if (!TryGetMapStyle(request, out MapStyle style) ||
+            !TryParseTile(relativePath, out int zoom, out int x, out int y))
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        int tilesAcross = 1 << zoom;
+        if (zoom > _renderer.MaximumZoom || x < 0 || y < 0 || x >= tilesAcross || y >= tilesAcross)
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        if (zoom <= _renderer.BaseMaximumZoom && !_renderer.IsStyleReady(style))
+        {
+            _renderer.RequestStyleRender(style);
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        if (!_renderer.IsReady)
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        if (zoom > _renderer.BaseMaximumZoom)
+        {
+            // Detail zooms render lazily on the shared worker; this waits briefly
+            // for a fresh tile and serves the cached file afterwards.
+            if (_renderer.TryGetDetailTile(style, zoom, x, y, out string detailPath))
+            {
+                ServePngFile(response, detailPath);
+            }
+            else
+            {
+                WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            }
+
+            return;
+        }
+
+        ServePngFile(response, _renderer.GetTilePath(style, zoom, x, y));
+    }
+
+    private void ServeBaseImage(
+        HttpListenerRequest request,
+        HttpListenerResponse response)
+    {
+        if (!TryGetMapStyle(request, out MapStyle style))
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        if (!_renderer.IsStyleReady(style))
+        {
+            _renderer.RequestStyleRender(style);
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        if (!_renderer.IsReady)
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        ServePngFile(response, _renderer.GetBasePath(style));
+    }
+
+    private void ServeFogImage(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        ViewLevel viewLevel)
+    {
+        if (!TryGetMapStyle(request, out MapStyle style) ||
+            GetEffectiveFogMode(viewLevel) == "off")
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        FogMaskSnapshot snapshot = _fogTracker.Snapshot;
+        bool solid = GetEffectiveFogHide(viewLevel, request);
+        byte[] png;
+        lock (_fogPngLock)
+        {
+            if (style == MapStyle.Chart)
+            {
+                if (_chartFogPng == null ||
+                    _chartFogPngRevision != snapshot.Revision ||
+                    _chartFogPngSolid != solid)
+                {
+                    _chartFogPng = BuildChartFogPng(snapshot.Mask, _renderer.Seed, solid);
+                    _chartFogPngRevision = snapshot.Revision;
+                    _chartFogPngSolid = solid;
+                }
+
+                png = _chartFogPng;
+            }
+            else
+            {
+                if (_fogPng == null ||
+                    _fogPngRevision != snapshot.Revision ||
+                    _fogPngSolid != solid)
+                {
+                    _fogPng = BuildFogPng(snapshot.Mask, solid);
+                    _fogPngRevision = snapshot.Revision;
+                    _fogPngSolid = solid;
+                }
+
+                png = _fogPng;
+            }
+        }
+
+        WriteBytes(
+            response,
+            HttpStatusCode.OK,
+            "image/png",
+            png,
+            "public, max-age=86400");
+    }
+
+    private string GetPoiPolicy(ViewLevel viewLevel)
+    {
+        if (viewLevel == ViewLevel.Shared)
+        {
+            return _config.SharedPoiGroups;
+        }
+
+        if (viewLevel == ViewLevel.Public)
+        {
+            return _config.PublicPoiGroups;
+        }
+
+        return "all";
+    }
+
+    private bool DungeonInteriorsAvailable(ViewLevel viewLevel)
+    {
+        return viewLevel != ViewLevel.Public || _config.PublicDungeonInteriors;
+    }
+
+    private bool PublicDungeonInteriorVisible(ViewLevel viewLevel, DungeonSnapshot dungeon)
+    {
+        if (viewLevel != ViewLevel.Public)
+        {
+            return true;
+        }
+
+        if (!AllowsPoiGroup(ViewLevel.Public, dungeon.Type))
+        {
+            return false;
+        }
+
+        return !GetEffectiveFogHide(ViewLevel.Public) ||
+               FogTracker.IsExplored(_fogTracker.Snapshot, dungeon.EntranceX, dungeon.EntranceZ);
+    }
+
+    private bool AllowsPoiGroup(ViewLevel viewLevel, string group)
+    {
+        if (viewLevel == ViewLevel.Admin)
+        {
+            return true;
+        }
+
+        if (viewLevel == ViewLevel.Shared)
+        {
+            return _config.AllowsSharedPoiGroup(group);
+        }
+
+        return _config.AllowsPublicPoiGroup(group);
+    }
+
+    private bool EntitiesAvailable(ViewLevel viewLevel)
+    {
+        if (!_config.EntityLayer)
+        {
+            return false;
+        }
+
+        return viewLevel != ViewLevel.Public || _config.AllowsAnyPublicEntityGroup();
+    }
+
+    private bool ChatAvailable(ViewLevel viewLevel)
+    {
+        return viewLevel != ViewLevel.Public || _config.PublicChat;
+    }
+
+    private bool LeaderboardAvailable(ViewLevel viewLevel)
+    {
+        return viewLevel != ViewLevel.Public || _config.PublicLeaderboard;
+    }
+
+    private bool EventsAvailable(ViewLevel viewLevel)
+    {
+        return viewLevel != ViewLevel.Public || _config.PublicEvents;
+    }
+
+    private bool ShowsOwnerNames(ViewLevel viewLevel)
+    {
+        return viewLevel != ViewLevel.Public || _publicShowPlayerNames;
+    }
+
+    private bool PointIsVisible(ViewLevel viewLevel, float x, float z)
+    {
+        if (!GetEffectiveFogHide(viewLevel))
+        {
+            return true;
+        }
+
+        return FogTracker.IsExplored(_fogTracker.Snapshot, x, z);
+    }
+
+    private static int CountVisibleEntities(
+        TrackedEntitySnapshot[] entities,
+        string group,
+        bool hideUnexplored,
+        FogMaskSnapshot fogSnapshot)
+    {
+        int count = 0;
+        for (int index = 0; index < entities.Length; index++)
+        {
+            TrackedEntitySnapshot entity = entities[index];
+            if (!string.Equals(entity.Group, group, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (hideUnexplored && !FogTracker.IsExplored(fogSnapshot, entity.X, entity.Z))
+            {
+                continue;
+            }
+
+            count++;
+        }
+
+        return count;
+    }
+
+    private bool AllowsEntityGroup(ViewLevel viewLevel, string group)
+    {
+        if (!_config.EntityLayer)
+        {
+            return false;
+        }
+
+        return viewLevel != ViewLevel.Public || _config.AllowsPublicEntityGroup(group);
+    }
+
+    private bool AllowsEntityTrail(ViewLevel viewLevel, string requestedId)
+    {
+        if (!_config.EntityLayer)
+        {
+            return false;
+        }
+
+        if (viewLevel != ViewLevel.Public)
+        {
+            return true;
+        }
+
+        if (!requestedId.StartsWith("entity:", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        TrackedEntitySnapshot? tracked = FindTrackedEntity(
+            requestedId.Substring("entity:".Length));
+        return tracked != null &&
+               _config.AllowsPublicEntityGroup(tracked.Group) &&
+               PointIsVisible(viewLevel, tracked.X, tracked.Z);
+    }
+
+    private TrackedEntitySnapshot? FindTrackedEntity(string id)
+    {
+        TrackedEntitySnapshot[] entities = _getEntitySnapshot().Entities;
+        for (int index = 0; index < entities.Length; index++)
+        {
+            if (string.Equals(entities[index].Id, id, StringComparison.Ordinal))
+            {
+                return entities[index];
+            }
+        }
+
+        return null;
+    }
+
+    private bool SeesAllPlayers(ViewLevel viewLevel)
+    {
+        if (viewLevel == ViewLevel.Admin)
+        {
+            // The admin tier now always requires a non-empty access token.
+            return !string.IsNullOrEmpty(AccessToken);
+        }
+
+        return !_respectInGameVisibility;
+    }
+
+    private string GetEffectiveFogMode(ViewLevel viewLevel)
+    {
+        return viewLevel == ViewLevel.Shared && !_config.SharedFog ? "off" : _getFogMode();
+    }
+
+    // Shared fog is owner-enforced. Admin fog is an optional display preview and never
+    // reduces admin privileges; the preview query cannot override a Shared restriction.
+    private bool GetEffectiveFogHide(ViewLevel viewLevel, HttpListenerRequest? request = null)
+    {
+        if (GetEffectiveFogMode(viewLevel) == "off")
+        {
+            return false;
+        }
+
+        return viewLevel == ViewLevel.Public ? _config.FogHideUnexplored :
+            viewLevel == ViewLevel.Shared ? _config.SharedFog :
+            string.Equals(request?.QueryString["fogpreview"], "1", StringComparison.Ordinal);
+    }
+
+    private double GetExploredPercentage(FogMaskSnapshot snapshot)
+    {
+        lock (_exploredPctLock)
+        {
+            if (_exploredPctRevision == snapshot.Revision)
+            {
+                return _exploredPctValue;
+            }
+
+            const double halfWorld = FogTracker.WorldSpan / 2.0;
+            double radiusSquared =
+                (double)WorldMapRenderer.WorldRadius * WorldMapRenderer.WorldRadius;
+            int revealedCells = 0;
+            int worldCells = 0;
+            for (int y = 0; y < FogTracker.Size; y++)
+            {
+                double worldZ = halfWorld - ((y + 0.5) * FogTracker.MetersPerPixel);
+                for (int x = 0; x < FogTracker.Size; x++)
+                {
+                    double worldX = -halfWorld + ((x + 0.5) * FogTracker.MetersPerPixel);
+                    if ((worldX * worldX) + (worldZ * worldZ) > radiusSquared)
+                    {
+                        continue;
+                    }
+
+                    worldCells++;
+                    if (snapshot.Mask[(y * FogTracker.Size) + x] != 0)
+                    {
+                        revealedCells++;
+                    }
+                }
+            }
+
+            _exploredPctValue = worldCells == 0
+                ? 0.0
+                : revealedCells * 100.0 / worldCells;
+            _exploredPctRevision = snapshot.Revision;
+            return _exploredPctValue;
+        }
+    }
+
+    private static byte[] BuildFogPng(byte[] mask, bool solid)
+    {
+        int expectedLength = FogTracker.Size * FogTracker.Size;
+        if (mask.Length != expectedLength)
+        {
+            throw new InvalidOperationException("Fog mask dimensions do not match its length.");
+        }
+
+        // Ghosted-fog treatment: unexplored terrain is dimmed and cooled toward a
+        // neutral slate (~57% cover) instead of blacked out, so the world's shape,
+        // biomes, and coastlines stay readable at every zoom while clearly fogged.
+        // The solid treatment (FogHideUnexplored) covers every unexplored cell fully;
+        // only the explored side of a boundary is feathered, so nothing peeks through.
+        const byte fogRed = 0x26;
+        const byte fogGreen = 0x2e;
+        const byte fogBlue = 0x3a;
+        int unrevealedAlpha = solid ? 255 : 145;
+        const int featherRadius = 2;
+        var rgba = new byte[expectedLength * 4];
+        for (int y = 0; y < FogTracker.Size; y++)
+        {
+            int minimumY = Math.Max(0, y - featherRadius);
+            int maximumY = Math.Min(FogTracker.Size - 1, y + featherRadius);
+            for (int x = 0; x < FogTracker.Size; x++)
+            {
+                int minimumX = Math.Max(0, x - featherRadius);
+                int maximumX = Math.Min(FogTracker.Size - 1, x + featherRadius);
+                int alphaTotal = 0;
+                int samples = 0;
+                for (int sampleY = minimumY; sampleY <= maximumY; sampleY++)
+                {
+                    int row = sampleY * FogTracker.Size;
+                    for (int sampleX = minimumX; sampleX <= maximumX; sampleX++)
+                    {
+                        if (mask[row + sampleX] == 0)
+                        {
+                            alphaTotal += unrevealedAlpha;
+                        }
+
+                        samples++;
+                    }
+                }
+
+                int offset = ((y * FogTracker.Size) + x) * 4;
+                rgba[offset] = fogRed;
+                rgba[offset + 1] = fogGreen;
+                rgba[offset + 2] = fogBlue;
+                rgba[offset + 3] = solid && mask[(y * FogTracker.Size) + x] == 0
+                    ? (byte)255
+                    : (byte)((alphaTotal + (samples / 2)) / samples);
+            }
+        }
+
+        return PngEncoder.EncodeRgba(rgba, FogTracker.Size, FogTracker.Size);
+    }
+
+    private static byte[] BuildChartFogPng(byte[] mask, int seed, bool solid)
+    {
+        int expectedLength = FogTracker.Size * FogTracker.Size;
+        if (mask.Length != expectedLength)
+        {
+            throw new InvalidOperationException("Fog mask dimensions do not match its length.");
+        }
+
+        int unrevealedAlpha = solid ? 255 : 210;
+        const int featherRadius = 2;
+        const float halfWorld = FogTracker.WorldSpan / 2f;
+        var rgba = new byte[expectedLength * 4];
+        for (int y = 0; y < FogTracker.Size; y++)
+        {
+            int minimumY = Math.Max(0, y - featherRadius);
+            int maximumY = Math.Min(FogTracker.Size - 1, y + featherRadius);
+            float worldZ = halfWorld - ((y + 0.5f) * FogTracker.MetersPerPixel);
+            for (int x = 0; x < FogTracker.Size; x++)
+            {
+                int minimumX = Math.Max(0, x - featherRadius);
+                int maximumX = Math.Min(FogTracker.Size - 1, x + featherRadius);
+                int alphaTotal = 0;
+                int samples = 0;
+                for (int sampleY = minimumY; sampleY <= maximumY; sampleY++)
+                {
+                    int row = sampleY * FogTracker.Size;
+                    for (int sampleX = minimumX; sampleX <= maximumX; sampleX++)
+                    {
+                        if (mask[row + sampleX] == 0)
+                        {
+                            alphaTotal += unrevealedAlpha;
+                        }
+
+                        samples++;
+                    }
+                }
+
+                float worldX = -halfWorld + ((x + 0.5f) * FogTracker.MetersPerPixel);
+                int offset = ((y * FogTracker.Size) + x) * 4;
+                MapStyleCompositor.ComposeChartFog(worldX, worldZ, seed)
+                    .WriteRgba(rgba, offset);
+                rgba[offset + 3] = solid && mask[(y * FogTracker.Size) + x] == 0
+                    ? (byte)255
+                    : (byte)((alphaTotal + (samples / 2)) / samples);
+            }
+        }
+
+        return PngEncoder.EncodeRgba(rgba, FogTracker.Size, FogTracker.Size);
+    }
+
+    private static void ServePngFile(HttpListenerResponse response, string path)
+    {
+        if (!File.Exists(path))
+        {
+            WriteJson(response, HttpStatusCode.NotFound, "{\"error\":\"not found\"}");
+            return;
+        }
+
+        WriteBytes(
+            response,
+            HttpStatusCode.OK,
+            "image/png",
+            File.ReadAllBytes(path),
+            "public, max-age=86400");
+    }
+
+    private static bool TryParseTile(string path, out int zoom, out int x, out int y)
+    {
+        zoom = 0;
+        x = 0;
+        y = 0;
+        string[] segments = path.Split('/');
+        if (segments.Length != 2 || !segments[1].EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        string coordinates = segments[1].Substring(0, segments[1].Length - 4);
+        int separator = coordinates.IndexOf('-');
+        if (separator <= 0 || separator != coordinates.LastIndexOf('-'))
+        {
+            return false;
+        }
+
+        return int.TryParse(segments[0], NumberStyles.None, CultureInfo.InvariantCulture, out zoom) &&
+               int.TryParse(coordinates.Substring(0, separator), NumberStyles.None, CultureInfo.InvariantCulture, out x) &&
+               int.TryParse(coordinates.Substring(separator + 1), NumberStyles.None, CultureInfo.InvariantCulture, out y) &&
+               zoom >= 0 && x >= 0 && y >= 0;
+    }
+
+    private static bool TryGetMapStyle(HttpListenerRequest request, out MapStyle style)
+    {
+        return MapStyles.TryParse(request.QueryString["style"], out style);
+    }
+
+    private static bool TryReadRequiredString(
+        HttpListenerRequest request,
+        HttpListenerResponse response,
+        string propertyName,
+        string requiredError,
+        out string value)
+    {
+        if (!TryReadStringProperty(request, propertyName, out value, out bool tooLarge))
+        {
+            if (tooLarge)
+            {
+                WriteJson(
+                    response,
+                    HttpStatusCode.RequestEntityTooLarge,
+                    "{\"ok\":false,\"error\":\"payload too large\"}");
+            }
+            else
+            {
+                WriteJson(
+                    response,
+                    HttpStatusCode.BadRequest,
+                    "{\"ok\":false,\"error\":" + JsonWriter.Quote(requiredError) + "}");
+            }
+
+            return false;
+        }
+
+        value = value.Trim();
+        if (value.Length > 0)
+        {
+            return true;
+        }
+
+        WriteJson(
+            response,
+            HttpStatusCode.BadRequest,
+            "{\"ok\":false,\"error\":" + JsonWriter.Quote(requiredError) + "}");
+        return false;
+    }
+
+    private static bool TryReadStringProperty(
+        HttpListenerRequest request,
+        string propertyName,
+        out string value,
+        out bool tooLarge)
+    {
+        value = string.Empty;
+        if (!TryReadRequestBody(request, out string json, out tooLarge))
+        {
+            return false;
+        }
+
+        return TryFindJsonPropertyValue(json, propertyName, out int valueIndex) &&
+               TryParseJsonString(json, valueIndex, out value);
+    }
+
+    private static bool TryReadRequestBody(
+        HttpListenerRequest request,
+        out string json,
+        out bool tooLarge)
+    {
+        json = string.Empty;
+        tooLarge = request.ContentLength64 > MaximumRequestBodyBytes;
+        if (tooLarge)
+        {
+            return false;
+        }
+
+        var bytes = new byte[MaximumRequestBodyBytes + 1];
+        int length = 0;
+        while (length < bytes.Length)
+        {
+            int read = request.InputStream.Read(bytes, length, bytes.Length - length);
+            if (read == 0)
+            {
+                break;
+            }
+
+            length += read;
+        }
+
+        if (length > MaximumRequestBodyBytes)
+        {
+            tooLarge = true;
+            return false;
+        }
+
+        json = Encoding.UTF8.GetString(bytes, 0, length);
+        return true;
+    }
+
+    private static bool TryParseTowJson(
+        string json,
+        out string shipId,
+        out float x,
+        out float z)
+    {
+        shipId = string.Empty;
+        x = 0f;
+        z = 0f;
+        bool hasShipId = false;
+        bool hasX = false;
+        bool hasZ = false;
+        int index = 0;
+        SkipJsonWhitespace(json, ref index);
+        if (index >= json.Length || json[index++] != '{')
+        {
+            return false;
+        }
+
+        SkipJsonWhitespace(json, ref index);
+        if (index < json.Length && json[index] == '}')
+        {
+            return false;
+        }
+
+        while (index < json.Length)
+        {
+            if (!TryParseStrictJsonString(json, ref index, out string propertyName))
+            {
+                return false;
+            }
+
+            SkipJsonWhitespace(json, ref index);
+            if (index >= json.Length || json[index++] != ':')
+            {
+                return false;
+            }
+
+            SkipJsonWhitespace(json, ref index);
+            switch (propertyName)
+            {
+                case "shipId":
+                    if (hasShipId || !TryParseStrictJsonString(json, ref index, out shipId))
+                    {
+                        return false;
+                    }
+                    hasShipId = true;
+                    break;
+                case "x":
+                    if (hasX || !TryParseStrictJsonNumber(json, ref index, out x))
+                    {
+                        return false;
+                    }
+                    hasX = true;
+                    break;
+                case "z":
+                    if (hasZ || !TryParseStrictJsonNumber(json, ref index, out z))
+                    {
+                        return false;
+                    }
+                    hasZ = true;
+                    break;
+                default:
+                    return false;
+            }
+
+            SkipJsonWhitespace(json, ref index);
+            if (index >= json.Length)
+            {
+                return false;
+            }
+
+            char separator = json[index++];
+            if (separator == '}')
+            {
+                SkipJsonWhitespace(json, ref index);
+                return index == json.Length && hasShipId && hasX && hasZ;
+            }
+            if (separator != ',')
+            {
+                return false;
+            }
+
+            SkipJsonWhitespace(json, ref index);
+        }
+
+        return false;
+    }
+
+    private static bool TryParseStrictJsonNumber(
+        string json,
+        ref int index,
+        out float value)
+    {
+        value = 0f;
+        int start = index;
+        if (index < json.Length && json[index] == '-')
+        {
+            index++;
+        }
+
+        if (index >= json.Length)
+        {
+            return false;
+        }
+
+        if (json[index] == '0')
+        {
+            index++;
+            if (index < json.Length && json[index] >= '0' && json[index] <= '9')
+            {
+                return false;
+            }
+        }
+        else if (json[index] >= '1' && json[index] <= '9')
+        {
+            do
+            {
+                index++;
+            }
+            while (index < json.Length && json[index] >= '0' && json[index] <= '9');
+        }
+        else
+        {
+            return false;
+        }
+
+        if (index < json.Length && json[index] == '.')
+        {
+            index++;
+            int fractionStart = index;
+            while (index < json.Length && json[index] >= '0' && json[index] <= '9')
+            {
+                index++;
+            }
+            if (fractionStart == index)
+            {
+                return false;
+            }
+        }
+
+        if (index < json.Length && (json[index] == 'e' || json[index] == 'E'))
+        {
+            index++;
+            if (index < json.Length && (json[index] == '+' || json[index] == '-'))
+            {
+                index++;
+            }
+            int exponentStart = index;
+            while (index < json.Length && json[index] >= '0' && json[index] <= '9')
+            {
+                index++;
+            }
+            if (exponentStart == index)
+            {
+                return false;
+            }
+        }
+
+        if (!double.TryParse(
+                json.Substring(start, index - start),
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out double parsed) ||
+            double.IsNaN(parsed) || double.IsInfinity(parsed) ||
+            parsed < -float.MaxValue || parsed > float.MaxValue)
+        {
+            return false;
+        }
+
+        value = (float)parsed;
+        return !float.IsNaN(value) && !float.IsInfinity(value);
+    }
+
+    private static bool TryParseStrictJsonString(
+        string json,
+        ref int index,
+        out string value)
+    {
+        value = string.Empty;
+        if (index >= json.Length || json[index++] != '"')
+        {
+            return false;
+        }
+
+        var output = new StringBuilder();
+        while (index < json.Length)
+        {
+            char character = json[index++];
+            if (character == '"')
+            {
+                value = output.ToString();
+                return true;
+            }
+            if (character < 0x20)
+            {
+                return false;
+            }
+            if (character != '\\')
+            {
+                output.Append(character);
+                continue;
+            }
+
+            if (index >= json.Length)
+            {
+                return false;
+            }
+
+            switch (json[index++])
+            {
+                case '"':
+                    output.Append('"');
+                    break;
+                case '\\':
+                    output.Append('\\');
+                    break;
+                case '/':
+                    output.Append('/');
+                    break;
+                case 'b':
+                    output.Append('\b');
+                    break;
+                case 'f':
+                    output.Append('\f');
+                    break;
+                case 'n':
+                    output.Append('\n');
+                    break;
+                case 'r':
+                    output.Append('\r');
+                    break;
+                case 't':
+                    output.Append('\t');
+                    break;
+                case 'u':
+                    if (index + 4 > json.Length ||
+                        !TryParseHexCharacter(json, index, out char escapedCharacter))
+                    {
+                        return false;
+                    }
+                    output.Append(escapedCharacter);
+                    index += 4;
+                    break;
+                default:
+                    return false;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryFindJsonPropertyValue(
+        string json,
+        string propertyName,
+        out int valueIndex)
+    {
+        valueIndex = 0;
+        string property = "\"" + propertyName + "\"";
+        int searchIndex = 0;
+        while (searchIndex < json.Length)
+        {
+            int propertyIndex = json.IndexOf(property, searchIndex, StringComparison.Ordinal);
+            if (propertyIndex < 0)
+            {
+                return false;
+            }
+
+            valueIndex = propertyIndex + property.Length;
+            SkipJsonWhitespace(json, ref valueIndex);
+            if (valueIndex >= json.Length || json[valueIndex] != ':')
+            {
+                searchIndex = valueIndex;
+                continue;
+            }
+
+            valueIndex++;
+            SkipJsonWhitespace(json, ref valueIndex);
+            return valueIndex < json.Length;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadJsonNumberProperty(
+        string json,
+        string propertyName,
+        out float value)
+    {
+        value = 0f;
+        if (!TryFindJsonPropertyValue(json, propertyName, out int valueIndex))
+        {
+            return false;
+        }
+
+        int endIndex = valueIndex;
+        while (endIndex < json.Length)
+        {
+            char character = json[endIndex];
+            if (character == ',' || character == '}' ||
+                character == ' ' || character == '\t' ||
+                character == '\r' || character == '\n')
+            {
+                break;
+            }
+
+            endIndex++;
+        }
+
+        return endIndex > valueIndex &&
+               float.TryParse(
+                   json.Substring(valueIndex, endIndex - valueIndex),
+                   NumberStyles.Float,
+                   CultureInfo.InvariantCulture,
+                   out value);
+    }
+
+    private static bool TryReadJsonStringProperty(
+        string json,
+        string propertyName,
+        out string value)
+    {
+        value = string.Empty;
+        return TryFindJsonPropertyValue(json, propertyName, out int valueIndex) &&
+               TryParseJsonString(json, valueIndex, out value);
+    }
+
+    private static bool TryReadJsonBooleanProperty(
+        string json,
+        string propertyName,
+        out bool value)
+    {
+        value = false;
+        if (!TryFindJsonPropertyValue(json, propertyName, out int valueIndex))
+        {
+            return false;
+        }
+
+        if (json.Length - valueIndex >= 4 &&
+            string.CompareOrdinal(json, valueIndex, "true", 0, 4) == 0 &&
+            IsJsonValueTerminator(json, valueIndex + 4))
+        {
+            value = true;
+            return true;
+        }
+
+        return json.Length - valueIndex >= 5 &&
+               string.CompareOrdinal(json, valueIndex, "false", 0, 5) == 0 &&
+               IsJsonValueTerminator(json, valueIndex + 5);
+    }
+
+    private static bool IsJsonValueTerminator(string json, int index)
+    {
+        if (index >= json.Length)
+        {
+            return true;
+        }
+
+        char character = json[index];
+        return character == ',' || character == '}' ||
+               character == ' ' || character == '\t' ||
+               character == '\r' || character == '\n';
+    }
+
+    private static bool TryParseJsonString(string json, int startIndex, out string value)
+    {
+        value = string.Empty;
+        if (startIndex >= json.Length || json[startIndex] != '"')
+        {
+            return false;
+        }
+
+        var output = new StringBuilder();
+        for (int index = startIndex + 1; index < json.Length; index++)
+        {
+            char character = json[index];
+            if (character == '"')
+            {
+                value = output.ToString();
+                return true;
+            }
+
+            if (character < 0x20)
+            {
+                return false;
+            }
+
+            if (character != '\\')
+            {
+                output.Append(character);
+                continue;
+            }
+
+            index++;
+            if (index >= json.Length)
+            {
+                return false;
+            }
+
+            switch (json[index])
+            {
+                case '"':
+                    output.Append('"');
+                    break;
+                case '\\':
+                    output.Append('\\');
+                    break;
+                case '/':
+                    output.Append('/');
+                    break;
+                case 'b':
+                    output.Append('\b');
+                    break;
+                case 'f':
+                    output.Append('\f');
+                    break;
+                case 'n':
+                    output.Append('\n');
+                    break;
+                case 'r':
+                    output.Append('\r');
+                    break;
+                case 't':
+                    output.Append('\t');
+                    break;
+                case 'u':
+                    if (index + 4 >= json.Length ||
+                        !TryParseHexCharacter(json, index + 1, out char escapedCharacter))
+                    {
+                        return false;
+                    }
+
+                    output.Append(escapedCharacter);
+                    index += 4;
+                    break;
+                default:
+                    return false;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryParseHexCharacter(string value, int startIndex, out char character)
+    {
+        int codePoint = 0;
+        for (int index = 0; index < 4; index++)
+        {
+            char digit = value[startIndex + index];
+            int parsed;
+            if (digit >= '0' && digit <= '9')
+            {
+                parsed = digit - '0';
+            }
+            else if (digit >= 'a' && digit <= 'f')
+            {
+                parsed = digit - 'a' + 10;
+            }
+            else if (digit >= 'A' && digit <= 'F')
+            {
+                parsed = digit - 'A' + 10;
+            }
+            else
+            {
+                character = '\0';
+                return false;
+            }
+
+            codePoint = (codePoint << 4) | parsed;
+        }
+
+        character = (char)codePoint;
+        return true;
+    }
+
+    private static void SkipJsonWhitespace(string value, ref int index)
+    {
+        while (index < value.Length)
+        {
+            char character = value[index];
+            if (character != ' ' && character != '\t' && character != '\r' && character != '\n')
+            {
+                return;
+            }
+
+            index++;
+        }
+    }
+
+    private static int FindWhitespace(string value)
+    {
+        for (int index = 0; index < value.Length; index++)
+        {
+            if (char.IsWhiteSpace(value[index]))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private static long ParseLong(string? value, long fallback)
+    {
+        return long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed)
+            ? parsed
+            : fallback;
+    }
+
+    private static string SanitizeLogValue(string value)
+    {
+        string sanitized = (value ?? string.Empty)
+            .Replace('\r', ' ')
+            .Replace('\n', ' ')
+            .Replace('\t', ' ')
+            .Trim();
+        return sanitized.Length <= 64 ? sanitized : sanitized.Substring(0, 64);
+    }
+
+    private static bool TryParseWorldCoordinate(string? value, out float coordinate)
+    {
+        return float.TryParse(
+                   value,
+                   NumberStyles.Float,
+                   CultureInfo.InvariantCulture,
+                   out coordinate) &&
+               !float.IsNaN(coordinate) &&
+               !float.IsInfinity(coordinate) &&
+               Math.Abs(coordinate) <= 100000f;
+    }
+
+    private static void WriteEventStreamEvent(Stream output, string eventName, string json)
+    {
+        WriteEventStreamText(output, "event: " + eventName + "\ndata: " + json + "\n\n");
+    }
+
+    private static void WriteEventStreamText(Stream output, string text)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(text);
+        output.Write(bytes, 0, bytes.Length);
+        output.Flush();
+    }
+
+    private static void TryCloseEventStream(HttpListenerResponse response)
+    {
+        try
+        {
+            response.OutputStream.Close();
+        }
+        catch (HttpListenerException)
+        {
+            // The event-stream client already disconnected.
+        }
+        catch (IOException)
+        {
+            // The event-stream client already disconnected.
+        }
+        catch (ObjectDisposedException)
+        {
+            // The event-stream response is already closed.
+        }
+        catch (InvalidOperationException)
+        {
+            // The event-stream response can no longer be closed normally.
+        }
+    }
+
+    private static void WriteJson(HttpListenerResponse response, HttpStatusCode status, string json)
+    {
+        WriteBytes(
+            response,
+            status,
+            "application/json; charset=utf-8",
+            Encoding.UTF8.GetBytes(json),
+            "no-store");
+    }
+
+    private static void TryWriteJson(HttpListenerResponse response, HttpStatusCode status, string json)
+    {
+        try
+        {
+            WriteJson(response, status, json);
+        }
+        catch (HttpListenerException)
+        {
+            // The client already disconnected.
+        }
+        catch (IOException)
+        {
+            // The client already disconnected.
+        }
+        catch (ObjectDisposedException)
+        {
+            // The response has already been closed.
+        }
+        catch (InvalidOperationException)
+        {
+            // Headers may already have been sent by the failed response.
+        }
+    }
+
+    private static void WriteBytes(
+        HttpListenerResponse response,
+        HttpStatusCode status,
+        string contentType,
+        byte[] content,
+        string cacheControl)
+    {
+        try
+        {
+            response.StatusCode = (int)status;
+            response.ContentType = contentType;
+            response.Headers[HttpResponseHeader.CacheControl] = cacheControl;
+            response.ContentLength64 = content.Length;
+            response.OutputStream.Write(content, 0, content.Length);
+            response.OutputStream.Close();
+        }
+        catch (HttpListenerException)
+        {
+            // Client disconnects are routine on Mono's managed listener.
+        }
+        catch (IOException)
+        {
+            // Client disconnects are routine on Mono's managed listener.
+        }
+        catch (ObjectDisposedException)
+        {
+            // The response has already been closed.
+        }
+    }
+
+    private static bool FixedTimeEquals(string expected, string supplied)
+    {
+        int difference = expected.Length ^ supplied.Length;
+        int length = Math.Max(expected.Length, supplied.Length);
+        for (int index = 0; index < length; index++)
+        {
+            char expectedCharacter = index < expected.Length ? expected[index] : '\0';
+            char suppliedCharacter = index < supplied.Length ? supplied[index] : '\0';
+            difference |= expectedCharacter ^ suppliedCharacter;
+        }
+
+        return difference == 0;
+    }
+
+    private static string NormalizeToken(string value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+    }
+
+    private static string FormatHost(string host)
+    {
+        return host.IndexOf(':') >= 0 && !host.StartsWith("[", StringComparison.Ordinal)
+            ? "[" + host + "]"
+            : host;
+    }
+
+    private static string HtmlAttributeEncode(string value)
+    {
+        return value.Replace("&", "&amp;")
+            .Replace("\"", "&quot;")
+            .Replace("<", "&lt;")
+            .Replace(">", "&gt;");
+    }
+}

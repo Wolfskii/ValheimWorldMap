@@ -37,26 +37,26 @@ jobs:
       - name: Fog world-coordinate regression
         run: node tools/ci/test-fog-geometry.cjs
 
-      - name: Build ValheimOne
+      - name: Build ValheimWorldMap
         shell: bash
         run: |
           set -euo pipefail
           ./build.sh
-          test -f src/ValheimOne/bin/Release/net472/ValheimOne.dll
+          test -f src/ValheimWorldMap/bin/Release/net472/ValheimWorldMap.dll
 
       - name: Leak gate
         shell: bash
         run: |
           tools/ci/leak-gate.sh \
-            src/ValheimOne/bin/Release/net472/ValheimOne.dll \
-            tools/release/valheimone.cfg
+            src/ValheimWorldMap/bin/Release/net472/ValheimWorldMap.dll \
+            tools/release/valheimworldmap.cfg
 
-      - name: Upload ValheimOne DLL
+      - name: Upload ValheimWorldMap DLL
         uses: actions/upload-artifact@v4
         with:
-          name: ValheimOne-${{ steps.toolchain.outputs.cache-version }}
+          name: ValheimWorldMap-${{ steps.toolchain.outputs.cache-version }}
           path: |
-            src/ValheimOne/bin/Release/net472/ValheimOne.dll
+            src/ValheimWorldMap/bin/Release/net472/ValheimWorldMap.dll
             tools/golden-fingerprint.txt
           if-no-files-found: error
 
@@ -66,7 +66,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          version_file="src/ValheimOne/Networking/VersionInfo.cs"
+          version_file="src/ValheimWorldMap/Networking/VersionInfo.cs"
           plugin_version="unavailable"
           if [[ -f "${version_file}" ]]; then
             detected_version="$(
@@ -81,8 +81,8 @@ jobs:
           fi
 
           {
-            echo "## ValheimOne build"
+            echo "## ValheimWorldMap build"
             echo
             echo "- Valheim dedicated-server build ID: ${{ steps.toolchain.outputs.buildid || 'unavailable' }}"
-            echo "- ValheimOne plugin version: ${plugin_version}"
+            echo "- ValheimWorldMap plugin version: ${plugin_version}"
           } >> "${GITHUB_STEP_SUMMARY}"

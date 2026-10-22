@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuilds ValheimOne and verifies the binary against release provenance.
+# Rebuilds ValheimWorldMap and verifies the binary against release provenance.
 #
 # Usage:
 #   tools/verify-reproducible.sh
@@ -10,7 +10,7 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-version_file="${repo_root}/src/ValheimOne/Networking/VersionInfo.cs"
+version_file="${repo_root}/src/ValheimWorldMap/Networking/VersionInfo.cs"
 package_script="${repo_root}/tools/package-release.sh"
 provenance="${repo_root}/tools/release/provenance.tsv"
 release_tag=""
@@ -27,7 +27,7 @@ usage() {
         '  tools/verify-reproducible.sh --against <path-to-dll-or-plugin-zip>' \
         '  tools/verify-reproducible.sh --allow-dirty [--release <tag> | --against <path>]' \
         '' \
-        'Clean-build the current source and compare ValheimOne.dll with its' \
+        'Clean-build the current source and compare ValheimWorldMap.dll with its' \
         'authoritative hash. --release downloads the upstream GitHub plugin zip;' \
         '--against checks a DLL or plugin zip already on disk.' \
         '' \
@@ -164,10 +164,10 @@ if [[ ${recorded_bepinex} != "${package_bepinex}" ]]; then
     exit 1
 fi
 
-rm -rf "${repo_root}/src/ValheimOne/bin" "${repo_root}/src/ValheimOne/obj"
+rm -rf "${repo_root}/src/ValheimWorldMap/bin" "${repo_root}/src/ValheimWorldMap/obj"
 "${repo_root}/build.sh"
 
-built_dll="${repo_root}/src/ValheimOne/bin/Release/net472/ValheimOne.dll"
+built_dll="${repo_root}/src/ValheimWorldMap/bin/Release/net472/ValheimWorldMap.dll"
 [[ -s ${built_dll} ]] || fail "missing clean build output ${built_dll}"
 
 compare_dll() {
@@ -181,26 +181,26 @@ compare_dll() {
     printf 'verified: %s %s\n' "${label}" "${actual}"
 }
 
-compare_dll 'clean build ValheimOne.dll' "${built_dll}" || exit 1
+compare_dll 'clean build ValheimWorldMap.dll' "${built_dll}" || exit 1
 
 verify_zip_dll() {
     local label="$1" zip_path="$2" extracted_dll="$3"
-    if ! unzip -p "${zip_path}" BepInEx/plugins/ValheimOne.dll > "${extracted_dll}"; then
-        fail "${label} does not contain BepInEx/plugins/ValheimOne.dll"
+    if ! unzip -p "${zip_path}" BepInEx/plugins/ValheimWorldMap.dll > "${extracted_dll}"; then
+        fail "${label} does not contain BepInEx/plugins/ValheimWorldMap.dll"
     fi
-    [[ -s ${extracted_dll} ]] || fail "${label} contains an empty ValheimOne.dll"
-    compare_dll "${label} ValheimOne.dll" "${extracted_dll}" || exit 1
+    [[ -s ${extracted_dll} ]] || fail "${label} contains an empty ValheimWorldMap.dll"
+    compare_dll "${label} ValheimWorldMap.dll" "${extracted_dll}" || exit 1
 }
 
 if [[ -n ${release_tag} ]]; then
     command -v gh >/dev/null 2>&1 || fail 'gh is required for --release'
     tmp_dir="$(mktemp -d)"
-    release_zip="${tmp_dir}/ValheimOne-${version}.zip"
+    release_zip="${tmp_dir}/ValheimWorldMap-${version}.zip"
     gh release download "${release_tag}" \
-        --repo HumanGenome/ValheimOne \
-        --pattern "ValheimOne-${version}.zip" \
+        --repo Wolfskii/ValheimWorldMap \
+        --pattern "ValheimWorldMap-${version}.zip" \
         --dir "${tmp_dir}"
-    [[ -s ${release_zip} ]] || fail "release ${release_tag} did not provide ValheimOne-${version}.zip"
+    [[ -s ${release_zip} ]] || fail "release ${release_tag} did not provide ValheimWorldMap-${version}.zip"
     verify_zip_dll "published ${release_tag} plugin zip" "${release_zip}" "${tmp_dir}/published.dll"
 elif [[ -n ${against_path} ]]; then
     [[ -f ${against_path} ]] || fail "comparison file not found: ${against_path}"

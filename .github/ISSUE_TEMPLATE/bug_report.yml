@@ -1,12 +1,12 @@
 name: Bug report
-description: Report a reproducible problem with ValheimOne
+description: Report a reproducible problem with ValheimWorldMap
 title: "[Bug]: "
 labels:
   - bug
 body:
   - type: markdown
     attributes:
-      value: Thanks for taking the time to report a ValheimOne bug.
+      value: Thanks for taking the time to report a ValheimWorldMap bug.
   - type: textarea
     id: what-happened
     attributes:
@@ -36,9 +36,9 @@ body:
     validations:
       required: true
   - type: input
-    id: valheimone-version
+    id: valheimworldmap-version
     attributes:
-      label: ValheimOne version
+      label: ValheimWorldMap version
       placeholder: e.g. 0.10.0
     validations:
       required: true
@@ -54,7 +54,7 @@ body:
     id: config-context
     attributes:
       label: Configuration context
-      description: If relevant, paste the affected sections or keys from valheimone.cfg. Remove sensitive values.
+      description: If relevant, paste the affected sections or keys from valheimworldmap.cfg. Remove sensitive values.
       render: ini
     validations:
       required: false

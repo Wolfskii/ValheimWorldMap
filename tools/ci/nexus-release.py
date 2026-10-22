@@ -20,10 +20,10 @@ import urllib.request
 import uuid
 
 
-REPOSITORY = "humangenome/ValheimOne"
+REPOSITORY = "Wolfskii/ValheimWorldMap"
 MOD_PAGE_ID = "3571"
-PLUGIN_GROUP = r"ValheimOne(?: \d+\.\d+\.\d+)?"
-FULL_GROUP = r"ValheimOne Full(?: \d+\.\d+\.\d+)?"
+PLUGIN_GROUP = r"ValheimWorldMap(?: \d+\.\d+\.\d+)?"
+FULL_GROUP = r"ValheimWorldMap Full(?: \d+\.\d+\.\d+)?"
 APPROVED_SCANS = ("VERIFIED", "INTERNALLY_VERIFIED", "MANUALLY_VERIFIED")
 # File categories listed on the public Files tab. ARCHIVED files sit in the file archive and
 # removed ones are gone, so a file only counts as downloadable in one of these.
@@ -55,7 +55,7 @@ def nexus(path, payload=None):
         "https://api.nexusmods.com" + path,
         data=json.dumps(payload).encode() if payload is not None else None,
         headers={"apikey": key, "Accept": "application/json", "Content-Type": "application/json",
-                 "User-Agent": "ValheimOne-release-sync"},
+                 "User-Agent": "ValheimWorldMap-release-sync"},
     )
     try:
         with urllib.request.build_opener(NoRedirect).open(request, timeout=45) as response:
@@ -90,7 +90,7 @@ def release_url(version):
 
 
 def nexus_display_name(version):
-    name = f"ValheimOne {version}"
+    name = f"ValheimWorldMap {version}"
     if len(name) > NAME_MAX or not re.fullmatch(NAME_PATTERN, name):
         raise ValueError("Nexus file name is too long or has characters Nexus refuses")
     return name
@@ -98,7 +98,7 @@ def nexus_display_name(version):
 
 def nexus_description(version):
     """One short fixed line; never the release body (see DESCRIPTION_MAX)."""
-    text = f"ValheimOne {version}. Full release notes: {release_url(version)}"
+    text = f"ValheimWorldMap {version}. Full release notes: {release_url(version)}"
     if len(text) > DESCRIPTION_MAX:
         raise ValueError(f"Nexus file description is over {DESCRIPTION_MAX} characters")
     return text
@@ -117,7 +117,7 @@ def nexus_changelog(body, version):
 
 def verify_assets(folder, release, version):
     """Check both GitHub release zips and the checksum manifest (digest, size, manifest)."""
-    names = [f"ValheimOne-{version}.zip", f"ValheimOne-full-{version}.zip"]
+    names = [f"ValheimWorldMap-{version}.zip", f"ValheimWorldMap-full-{version}.zip"]
     sums_name = f"SHA256SUMS-{version}.txt"
     assets = {a["name"]: a for a in release["assets"]}
     expected = {}
@@ -272,7 +272,7 @@ def verify_public_downloads(response, version, current):
         raise ValueError("Nexus page/scan query failed; download status is unverified")
     data = response.get("data") or {}
     mod = data.get("mod") or {}
-    if mod.get("name") != "ValheimOne" or mod.get("status") != "published":
+    if mod.get("name") != "ValheimWorldMap" or mod.get("status") != "published":
         raise ValueError("Nexus page is not the expected published mod")
     if mod.get("version") != version:
         raise ValueError("Nexus page version does not match GitHub Latest")
@@ -316,7 +316,7 @@ def main():
     folder = args.directory
     folder.mkdir(parents=True, exist_ok=True)
     if args.mode != "verify":
-        for name in [f"ValheimOne-{version}.zip", f"ValheimOne-full-{version}.zip", f"SHA256SUMS-{version}.txt"]:
+        for name in [f"ValheimWorldMap-{version}.zip", f"ValheimWorldMap-full-{version}.zip", f"SHA256SUMS-{version}.txt"]:
             subprocess.run([
                 "gh", "release", "download", release["tag_name"], "--repo", REPOSITORY,
                 "--dir", str(folder), "--pattern", name, "--clobber",
@@ -326,7 +326,7 @@ def main():
         print(f"GitHub {release['tag_name']}: both archives and checksum manifest verified")
         return
     mod = nexus(f"/v3/games/valheim/mods/{MOD_PAGE_ID}")["data"]
-    if str(mod["game_scoped_id"]) != MOD_PAGE_ID or mod.get("name") != "ValheimOne":
+    if str(mod["game_scoped_id"]) != MOD_PAGE_ID or mod.get("name") != "ValheimWorldMap":
         raise ValueError("Unexpected Nexus mod identity")
     mod_id = str(mod["id"])
     if not re.fullmatch(r"[A-Za-z0-9-]+", mod_id):

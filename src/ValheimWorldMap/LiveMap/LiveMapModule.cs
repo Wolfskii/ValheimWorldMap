@@ -1,0 +1,435 @@
+using System;
+using HarmonyLib;
+using UnityEngine;
+using ValheimWorldMap.ActivityLog;
+using ValheimWorldMap.Configuration;
+using ValheimWorldMap.Infrastructure;
+using ValheimWorldMap.Modules;
+
+namespace ValheimWorldMap.LiveMap;
+
+public sealed class LiveMapModule : IFeatureModule
+{
+    private readonly FeatureDefinition _feature;
+    private readonly LiveMapConfig _config;
+    private readonly ActivityLogModule _activityLog;
+    private readonly ServerSessionEventSource _sessionEvents;
+    private readonly ModLogger _log;
+    private readonly FeatureRegistry _registry;
+    private readonly string _dataDirectory;
+    private readonly object _storeLock = new object();
+    private WebPinStore? _webPinStore;
+    private ActivityHeatmap? _activityHeatmap;
+    private TimelapseRecorder? _timelapseRecorder;
+    private LeaderboardStore? _leaderboardStore;
+    private LeaderboardBehaviour? _leaderboardBehaviour;
+    private bool _shutdown;
+
+    public LiveMapModule(
+        FeatureRegistry registry,
+        ActivityLogModule activityLog,
+        ServerSessionEventSource sessionEvents,
+        string dataDirectory)
+    {
+        _registry = registry;
+        _activityLog = activityLog;
+        _sessionEvents = sessionEvents;
+        _dataDirectory = dataDirectory;
+        _log = new ModLogger(BepInEx.Logging.Logger.CreateLogSource("ValheimWorldMap.LiveMap"));
+        _feature = registry.Register(Name, Section, Classification);
+
+        ConfigEntryInt port = _feature.Int(
+            "Port",
+            8790,
+            "TCP port for the live-map HTTP server.");
+        ConfigEntryInt textureSize = _feature.Int(
+            "TextureSize",
+            2048,
+            "World-map texture size. Power-of-two values of 2048 or 4096 are recommended.");
+        ConfigEntryFloat playerUpdateSeconds = _feature.Float(
+            "PlayerUpdateSeconds",
+            2f,
+            "Seconds between server-side player snapshot updates.");
+        ConfigEntryInt ghostRetentionDays = _feature.Int(
+            "GhostRetentionDays",
+            14,
+            "Days to retain last-seen player positions and playtime, clamped to 1..365.");
+        ConfigEntryBool adminSeesAll = _feature.Bool(
+            "AdminSeesAll",
+            false,
+            "Retained for compatibility; the token-authenticated admin view always shows all players.");
+        ConfigEntryString bindIp = _feature.String(
+            "BindIp",
+            string.Empty,
+            "IP address to bind. Empty listens on all interfaces with a localhost fallback.");
+        ConfigEntryString accessToken = _feature.String(
+            "AccessToken",
+            string.Empty,
+            "Optional token granting the admin map view as ?token= or X-LiveMap-Token.");
+        ConfigEntryString shareToken = _feature.String(
+            "ShareToken",
+            string.Empty,
+            "Optional token granting a shared spectator map view as ?token= or " +
+            "X-LiveMap-Token: player names, configured Shared layers, and follow, but never console or admin " +
+            "actions.");
+        ConfigEntryBool publicView = _feature.Bool(
+            "PublicView",
+            true,
+            "Serve a read-only public map view to tokenless requests.");
+        ConfigEntryBool publicPins = _feature.Bool(
+            "PublicPins",
+            false,
+            "Expose player-placed cartography pins on the public map without author names.");
+        ConfigEntryBool sharedPinEditing = _feature.Bool(
+            "SharedPinEditing",
+            true,
+            "Shared-view visitors may add web pins and edit/delete their own; " +
+            "admins always edit everything.");
+        ConfigEntryBool publicWebPins = _feature.Bool(
+            "PublicWebPins",
+            false,
+            "Expose web pins read-only to the public view.");
+        ConfigEntryBool timelapse = _feature.Bool(
+            "Timelapse",
+            true,
+            "Record periodic aggregate world-state snapshots (explored fog, base footprints, " +
+            "portals, boss progress, and aggregate movement) so the map can replay world history. " +
+            "Snapshots are state, not images, and are bounded on disk.");
+        ConfigEntryInt timelapseIntervalMinutes = _feature.Int(
+            "TimelapseIntervalMinutes",
+            60,
+            "Minutes between world timelapse snapshots, clamped to 5..1440.");
+        ConfigEntryBool publicTimelapse = _feature.Bool(
+            "PublicTimelapse",
+            false,
+            "Expose world timelapse history to the tokenless public view. Off by default: " +
+            "base-growth history maps where players live and how they expanded over time, which is " +
+            "more revealing than a live position dot, so opening it is an explicit owner decision.");
+        ConfigEntryBool mirrorChat = _feature.Bool(
+            "MirrorChat",
+            false,
+            "Mirror player Say and Shout chat onto authenticated live-map views. " +
+            "Disabled by default because chat is player speech and the server owner must " +
+            "explicitly opt in. When enabled, the last 200 Say and Shout lines persist in " +
+            "chat-history.json and reload after a restart; turning it off deletes that file.");
+        ConfigEntryBool respectInGameVisibility = _feature.Bool(
+            "RespectInGameVisibility",
+            true,
+            "Omit players who disabled in-game position sharing from shared and public views. " +
+            "The token-authenticated admin view always shows all players.");
+        ConfigEntryBool publicShowPlayerNames = _feature.Bool(
+            "PublicShowPlayerNames",
+            false,
+            "Show player names on the public view. " +
+            "Disabled by default so a public link never exposes player names; " +
+            "public players render as anonymous markers unless the owner opts in.");
+        ConfigEntryBool entityLayer = _feature.Bool(
+            "EntityLayer",
+            false,
+            "Serve ships, carts, and portals as a toggleable admin and shared map layer. " +
+            "Public views stay empty unless PublicEntityGroups names those groups.");
+        ConfigEntryBool resourceLayers = _feature.Bool(
+            "ResourceLayers",
+            true,
+            "Serve request-gated ore and forage layers on shared and admin maps, and on the " +
+            "public view when PublicPoiGroups names those groups.");
+        ConfigEntryString fogMode = _feature.String(
+            "FogMode",
+            "off",
+            "Fog of war for the map view: off (full map), trails (areas players have traveled), " +
+            "explored (player trails plus cartography-table exploration data).");
+        ConfigEntryBool fogHideUnexplored = _feature.Bool(
+            "FogHideUnexplored",
+            false,
+            "Hide unexplored areas completely on the fogged public view: an opaque cover instead " +
+            "of the ghosted tint, and region names plus allowed point-of-interest, last-seen, and " +
+            "entity markers stay hidden until someone explores them. No effect when FogMode is off.");
+        ConfigEntryBool sharedFog = _feature.Bool(
+            "SharedFog",
+            false,
+            "Apply the configured FogMode to Shared viewers with a locked opaque cover and " +
+            "hide unexplored points of interest and region names. Chat and stats remain " +
+            "available. Set FogMode to trails or explored; off disables fog for every view.");
+        ConfigEntryString sharedPoiGroups = _feature.String(
+            "SharedPoiGroups",
+            "all",
+            "Point-of-interest layers available to Shared viewers: all, none, or space-separated " +
+            "group or category keys such as spawn trader boss dungeons ores. Only named groups " +
+            "are served. See the configuration reference for the complete list. Admin access is unchanged.");
+        ConfigEntryString publicPoiGroups = _feature.String(
+            "PublicPoiGroups",
+            "spawn trader",
+            "Point-of-interest layers available to the tokenless public view: all, none, or " +
+            "space-separated group or category keys such as spawn trader boss dungeons ores. " +
+            "Defaults to spawn and trader so a public link does not reveal boss altars, " +
+            "dungeons, or deposits until the owner opts in. FogHideUnexplored still withholds " +
+            "unexplored markers. See the configuration reference for the complete list. " +
+            "Admin access is unchanged.");
+        ConfigEntryString publicEntityGroups = _feature.String(
+            "PublicEntityGroups",
+            "none",
+            "Entity groups available to the tokenless public view: none, all, or space-separated " +
+            "keys such as ship portal cart ward bed tombstone. Requires EntityLayer. Off by " +
+            "default because live boats and portal tags reveal current player routes. " +
+            "FogHideUnexplored still withholds unexplored markers. Admin and shared access is unchanged.");
+        ConfigEntryBool publicChat = _feature.Bool(
+            "PublicChat",
+            false,
+            "Show the read-only chat panel on the tokenless public view. Off by default because " +
+            "chat is player speech. The public view never gains a send box. MirrorChat still " +
+            "controls whether player Say and Shout are captured, and PublicShowPlayerNames and " +
+            "RespectInGameVisibility decide which sender names and positions the public view sees.");
+        ConfigEntryBool publicLeaderboard = _feature.Bool(
+            "PublicLeaderboard",
+            false,
+            "Show the wipe leaderboard on the tokenless public view. Off by default because it " +
+            "names players and their playtime, deaths, and travel. Admin and shared access is unchanged.");
+        ConfigEntryBool publicEvents = _feature.Bool(
+            "PublicEvents",
+            false,
+            "Show the live raid-event overlay on the tokenless public view. Off by default " +
+            "because a raid circle marks where players are fighting. Admin and shared access is unchanged.");
+        ConfigEntryBool publicDungeonInteriors = _feature.Bool(
+            "PublicDungeonInteriors",
+            false,
+            "Let the tokenless public view open interiors for dungeon entrances that are already " +
+            "visible on that view. FogHideUnexplored and PublicPoiGroups still hide entrances that " +
+            "have not been explored. Admin and shared access is unchanged.");
+        ConfigEntryBool consoleEnabled = _feature.Bool(
+            "ConsoleEnabled",
+            false,
+            "Enable the web admin console API and dashboard console tab.");
+        ConfigEntryString consoleWhitelist = _feature.String(
+            "ConsoleWhitelist",
+            "vwm save kick ban unban banned lodbias sleep",
+            "Space-separated list of console commands the web console may execute. " +
+            "The ValheimWorldMap vwm command family is always allowed even when omitted.");
+        ConfigEntryBool allowAllCommands = _feature.Bool(
+            "AllowAllCommands",
+            false,
+            "Allow the web console to execute any console command, bypassing ConsoleWhitelist.");
+        ConfigEntryInt consoleLogLines = _feature.Int(
+            "ConsoleLogLines",
+            500,
+            "Server log ring buffer size for the web console (clamped 50..5000).");
+        ConfigEntryBool statusPublic = _feature.Bool(
+            "StatusPublic",
+            true,
+            "Serve /api/status without an access token even when the map itself is token-locked " +
+            "(for hosting-panel queries).");
+        _config = new LiveMapConfig(
+            port,
+            textureSize,
+            playerUpdateSeconds,
+            ghostRetentionDays,
+            adminSeesAll,
+            bindIp,
+            accessToken,
+            shareToken,
+            publicView,
+            publicPins,
+            sharedPinEditing,
+            publicWebPins,
+            timelapse,
+            timelapseIntervalMinutes,
+            publicTimelapse,
+            mirrorChat,
+            respectInGameVisibility,
+            publicShowPlayerNames,
+            entityLayer,
+            resourceLayers,
+            fogMode,
+            fogHideUnexplored,
+            sharedFog,
+            sharedPoiGroups,
+            publicPoiGroups,
+            publicEntityGroups,
+            publicChat,
+            publicLeaderboard,
+            publicEvents,
+            publicDungeonInteriors,
+            consoleEnabled,
+            consoleWhitelist,
+            allowAllCommands,
+            consoleLogLines,
+            statusPublic);
+        activityLog.ConfigureGhostRetention(() => _config.GhostRetentionDays);
+        registry.EffectiveValuesChanged += MapPingPatch.RefreshChatConfiguration;
+        registry.EffectiveValuesChanged += SynchronizeWebPinStore;
+        SynchronizeWebPinStore();
+        VwmCommands.Initialize(registry, _config, activityLog, _log);
+    }
+
+    public string Name => "Live map";
+
+    public string Section => "LiveMap";
+
+    public bool IsEnabled => _feature.Enabled.Value;
+
+    public FeatureClassification Classification => FeatureClassification.ServerAuthoritative;
+
+    internal WebPinStore? WebPinStore
+    {
+        get
+        {
+            lock (_storeLock)
+            {
+                return _webPinStore;
+            }
+        }
+    }
+
+    internal ActivityHeatmap? ActivityHeatmap
+    {
+        get
+        {
+            lock (_storeLock)
+            {
+                return _activityHeatmap;
+            }
+        }
+    }
+
+    internal TimelapseRecorder? TimelapseRecorder
+    {
+        get
+        {
+            lock (_storeLock)
+            {
+                return _timelapseRecorder;
+            }
+        }
+    }
+
+    internal LeaderboardStore? LeaderboardStore
+    {
+        get
+        {
+            lock (_storeLock)
+            {
+                return _leaderboardStore;
+            }
+        }
+    }
+
+    public void ApplyPatches(Harmony harmony)
+    {
+        GameCompat.ApplyHeadlessSaveCompatibility(harmony);
+        VwmCommands.ApplyPatches(harmony);
+        MapPingPatch.ApplyPatches(
+            harmony,
+            () => _feature.Enabled.Value,
+            () => _config.MirrorChat,
+            _log,
+            _dataDirectory);
+        if (LiveMapBehaviour.Instance != null)
+        {
+            _log.Warning("[LiveMap] behaviour already exists; skipping duplicate initialization.");
+            return;
+        }
+
+        var host = new GameObject("ValheimWorldMap.LiveMap")
+        {
+            hideFlags = HideFlags.HideAndDontSave,
+        };
+        UnityEngine.Object.DontDestroyOnLoad(host);
+        _leaderboardBehaviour = LeaderboardBehaviour.Initialize(
+            host,
+            () => LeaderboardStore,
+            _sessionEvents);
+        LiveMapBehaviour.Initialize(
+            host,
+            _config,
+            _activityLog,
+            _log,
+            _dataDirectory,
+            () => _feature.Enabled.Value,
+            () => WebPinStore,
+            () => ActivityHeatmap,
+            () => TimelapseRecorder,
+            () => LeaderboardStore);
+    }
+
+    public void Shutdown()
+    {
+        WebPinStore? store;
+        ActivityHeatmap? activityHeatmap;
+        TimelapseRecorder? timelapseRecorder;
+        LeaderboardStore? leaderboardStore;
+        LeaderboardBehaviour? leaderboardBehaviour;
+        lock (_storeLock)
+        {
+            if (_shutdown)
+            {
+                return;
+            }
+
+            _shutdown = true;
+            _registry.EffectiveValuesChanged -= SynchronizeWebPinStore;
+            store = _webPinStore;
+            _webPinStore = null;
+            activityHeatmap = _activityHeatmap;
+            _activityHeatmap = null;
+            timelapseRecorder = _timelapseRecorder;
+            _timelapseRecorder = null;
+            leaderboardStore = _leaderboardStore;
+            _leaderboardStore = null;
+            leaderboardBehaviour = _leaderboardBehaviour;
+            _leaderboardBehaviour = null;
+        }
+
+        leaderboardBehaviour?.StopPermanently();
+        MapPingPatch.ShutdownChatPersistence();
+        store?.Dispose();
+        activityHeatmap?.Dispose();
+        timelapseRecorder?.Dispose();
+        leaderboardStore?.Dispose();
+    }
+
+    private void SynchronizeWebPinStore()
+    {
+        WebPinStore? storeToDispose = null;
+        ActivityHeatmap? heatmapToDispose = null;
+        TimelapseRecorder? timelapseToDispose = null;
+        LeaderboardStore? leaderboardToDispose = null;
+        lock (_storeLock)
+        {
+            if (_shutdown)
+            {
+                return;
+            }
+
+            if (_feature.Enabled.Value)
+            {
+                _webPinStore ??= new WebPinStore(_dataDirectory, _log);
+                _activityHeatmap ??= new ActivityHeatmap(_dataDirectory, _log);
+                if (_config.Timelapse)
+                {
+                    _timelapseRecorder ??= new TimelapseRecorder(_dataDirectory, _log);
+                }
+                else
+                {
+                    timelapseToDispose = _timelapseRecorder;
+                    _timelapseRecorder = null;
+                }
+                _leaderboardStore ??= new LeaderboardStore(_dataDirectory, _log);
+            }
+            else
+            {
+                storeToDispose = _webPinStore;
+                _webPinStore = null;
+                heatmapToDispose = _activityHeatmap;
+                _activityHeatmap = null;
+                timelapseToDispose = _timelapseRecorder;
+                _timelapseRecorder = null;
+                leaderboardToDispose = _leaderboardStore;
+                _leaderboardStore = null;
+            }
+        }
+
+        storeToDispose?.Dispose();
+        heatmapToDispose?.Dispose();
+        timelapseToDispose?.Dispose();
+        leaderboardToDispose?.Dispose();
+    }
+}

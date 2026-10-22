@@ -1,0 +1,157 @@
+using System.Globalization;
+using BepInEx.Configuration;
+
+namespace ValheimWorldMap.Configuration;
+
+public interface IConfigEntry
+{
+    ConfigKeyDefinition Definition { get; }
+
+    string GetSerializedValue();
+}
+
+public sealed class ConfigEntryBool : IConfigEntry
+{
+    private readonly ConfigEntry<bool> _entry;
+    private readonly ValheimWorldMapConfig _settings;
+
+    internal ConfigEntryBool(
+        ConfigEntry<bool> entry,
+        ConfigKeyDefinition definition,
+        ValheimWorldMapConfig settings)
+    {
+        _entry = entry;
+        _settings = settings;
+        Definition = definition;
+    }
+
+    public ConfigKeyDefinition Definition { get; }
+
+    public bool Value => _settings.GetEffectiveValue(_entry, Definition);
+
+    public string GetSerializedValue() => Value ? "true" : "false";
+}
+
+public sealed class ConfigEntryString : IConfigEntry
+{
+    private readonly ConfigEntry<string> _entry;
+    private readonly ValheimWorldMapConfig _settings;
+
+    internal ConfigEntryString(
+        ConfigEntry<string> entry,
+        ConfigKeyDefinition definition,
+        ValheimWorldMapConfig settings)
+    {
+        _entry = entry;
+        _settings = settings;
+        Definition = definition;
+    }
+
+    public ConfigKeyDefinition Definition { get; }
+
+    public string Value => _settings.GetEffectiveValue(_entry, Definition);
+
+    public string GetSerializedValue() => Value;
+}
+
+public sealed class ConfigEntryInt : IConfigEntry
+{
+    private readonly ConfigEntry<int> _entry;
+    private readonly ValheimWorldMapConfig _settings;
+
+    internal ConfigEntryInt(
+        ConfigEntry<int> entry,
+        ConfigKeyDefinition definition,
+        ValheimWorldMapConfig settings)
+    {
+        _entry = entry;
+        _settings = settings;
+        Definition = definition;
+    }
+
+    public ConfigKeyDefinition Definition { get; }
+
+    public int Value => _settings.GetEffectiveValue(_entry, Definition);
+
+    public string GetSerializedValue() => Value.ToString(CultureInfo.InvariantCulture);
+}
+
+public sealed class ConfigEntryFloat : IConfigEntry
+{
+    private readonly ConfigEntry<float> _entry;
+    private readonly ValheimWorldMapConfig _settings;
+
+    internal ConfigEntryFloat(
+        ConfigEntry<float> entry,
+        ConfigKeyDefinition definition,
+        ValheimWorldMapConfig settings)
+    {
+        _entry = entry;
+        _settings = settings;
+        Definition = definition;
+    }
+
+    public ConfigKeyDefinition Definition { get; }
+
+    public float Value => _settings.GetEffectiveValue(_entry, Definition);
+
+    public string GetSerializedValue() => Value.ToString("R", CultureInfo.InvariantCulture);
+}
+
+public sealed class ConfigEntryPercent : IConfigEntry
+{
+    private readonly ConfigEntry<float> _entry;
+    private readonly ValheimWorldMapConfig _settings;
+
+    internal ConfigEntryPercent(
+        ConfigEntry<float> entry,
+        ConfigKeyDefinition definition,
+        ValheimWorldMapConfig settings)
+    {
+        _entry = entry;
+        _settings = settings;
+        Definition = definition;
+    }
+
+    public ConfigKeyDefinition Definition { get; }
+
+    public float Value => _settings.GetEffectiveValue(_entry, Definition);
+
+    public string GetSerializedValue() => Value.ToString("R", CultureInfo.InvariantCulture);
+
+    public float Apply(float baseValue)
+    {
+        if (Value <= -100f)
+        {
+            return 0f;
+        }
+
+        float result = baseValue * (1f + (Value / 100f));
+        return result < 0f ? 0f : result;
+    }
+
+    public int ApplyChance(float baseValue)
+    {
+        float adjustedValue = Apply(baseValue);
+        if (adjustedValue <= 0f)
+        {
+            return 0;
+        }
+
+        if (adjustedValue >= int.MaxValue)
+        {
+            return int.MaxValue;
+        }
+
+        int guaranteedValue = (int)adjustedValue;
+        float fractionalChance = adjustedValue - guaranteedValue;
+        if (fractionalChance <= 0f)
+        {
+            return guaranteedValue;
+        }
+
+        return UnityEngine.Random.value < fractionalChance
+            ? guaranteedValue + 1
+            : guaranteedValue;
+    }
+}

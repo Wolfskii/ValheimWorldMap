@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Checks whether a ValheimOne DLL carries the live map's sidebar footer link.
+"""Checks whether a ValheimWorldMap DLL carries the live map's sidebar footer link.
 
 The live map pages are embedded in the DLL as gzip + base64 string literals
-(src/ValheimOne/LiveMap/Web/EmbeddedAssets.g.cs), so a plain `strings` or grep
+(src/ValheimWorldMap/LiveMap/Web/EmbeddedAssets.g.cs), so a plain `strings` or grep
 over the binary cannot see the page text. This script finds every embedded
 payload in the DLL's string heap, decompresses it, and searches the page text.
 
@@ -14,7 +14,7 @@ payload in the DLL's string heap, decompresses it, and searches the page text.
 Either way the decoded payloads must include the map page itself, so an
 extraction that finds nothing can never pass as "absent".
 
-Usage: tools/ci/hosting-credit-gate.py <ValheimOne.dll> --hosting-credit absent|present
+Usage: tools/ci/hosting-credit-gate.py <ValheimWorldMap.dll> --hosting-credit absent|present
 """
 
 import argparse

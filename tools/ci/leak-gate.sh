@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fails the build if a shipped file carries a host/build-machine detail.
 #
-# ValheimOne is developed inside a private hosting codebase and ships as a
+# ValheimWorldMap is developed inside a private hosting codebase and ships as a
 # public binary, so the interesting failure is a string that survived the
 # compile: an internal panel path, a build-host home directory, a test-server
 # address, a private repo URL. `strings -a` reads text files fine too, so the

@@ -12,9 +12,9 @@ backup=$(mktemp -d)
 plugins="$server/BepInEx/plugins"
 config="$server/BepInEx/config"
 output="$repo/artifacts/runtime-regression"
-browser_hold=${VALHEIMONE_BROWSER_HOLD_SECONDS:-0}
+browser_hold=${VALHEIMWORLDMAP_BROWSER_HOLD_SECONDS:-0}
 [[ $browser_hold =~ ^[0-9]+$ && $browser_hold -le 600 ]] || { echo 'Browser hold must be 0–600 seconds.' >&2; exit 1; }
-export VALHEIMONE_BROWSER_HOLD_SECONDS="$browser_hold"
+export VALHEIMWORLDMAP_BROWSER_HOLD_SECONDS="$browser_hold"
 console_result="$backup/console-result.txt"
 export CONSOLE_PROBE_TOKEN
 CONSOLE_PROBE_TOKEN=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
@@ -30,32 +30,32 @@ cleanup() {
         wait "$pid" 2>/dev/null || true
         pid=
     fi
-    for name in ValheimOne.dll ValheimOne.RuntimeRegression.dll; do
+    for name in ValheimWorldMap.dll ValheimWorldMap.RuntimeRegression.dll; do
         rm -f "$plugins/$name"
         [[ ! -f "$backup/$name" ]] || mv "$backup/$name" "$plugins/$name"
     done
-    rm -f "$config/valheimone.cfg"
-    [[ ! -f "$backup/valheimone.cfg" ]] || mv "$backup/valheimone.cfg" "$config/valheimone.cfg"
+    rm -f "$config/valheimworldmap.cfg"
+    [[ ! -f "$backup/valheimworldmap.cfg" ]] || mv "$backup/valheimworldmap.cfg" "$config/valheimworldmap.cfg"
     [[ ! -d "$config/runtime-regression" ]] || cp -a "$config/runtime-regression" "$output/data-$(date -u +%Y%m%dT%H%M%S)"
     rm -rf "$config/runtime-regression"
     [[ ! -d "$backup/runtime-regression" ]] || mv "$backup/runtime-regression" "$config/runtime-regression"
     rm -rf "$backup"
 }
-for name in ValheimOne.dll ValheimOne.RuntimeRegression.dll; do
+for name in ValheimWorldMap.dll ValheimWorldMap.RuntimeRegression.dll; do
     [[ ! -f "$plugins/$name" ]] || cp -p "$plugins/$name" "$backup/$name"
 done
-[[ ! -f "$config/valheimone.cfg" ]] || cp -p "$config/valheimone.cfg" "$backup/valheimone.cfg"
+[[ ! -f "$config/valheimworldmap.cfg" ]] || cp -p "$config/valheimworldmap.cfg" "$backup/valheimworldmap.cfg"
 [[ ! -d "$config/runtime-regression" ]] || mv "$config/runtime-regression" "$backup/runtime-regression"
 trap cleanup EXIT
-# VALHEIMONE_PLUGIN_DLL tests another build of the plugin, such as the Thunderstore build.
-plugin_dll=${VALHEIMONE_PLUGIN_DLL:-"$repo/src/ValheimOne/bin/Release/net472/ValheimOne.dll"}
-cp "$plugin_dll" "$plugins/ValheimOne.dll"
-if [[ -n ${VALHEIMONE_PLUGIN_ZIP:-} ]]; then
-    unzip -p "$VALHEIMONE_PLUGIN_ZIP" BepInEx/plugins/ValheimOne.dll > "$plugins/ValheimOne.dll"
-    cmp "$plugins/ValheimOne.dll" "$plugin_dll"
+# VALHEIMWORLDMAP_PLUGIN_DLL tests another build of the plugin, such as the Thunderstore build.
+plugin_dll=${VALHEIMWORLDMAP_PLUGIN_DLL:-"$repo/src/ValheimWorldMap/bin/Release/net472/ValheimWorldMap.dll"}
+cp "$plugin_dll" "$plugins/ValheimWorldMap.dll"
+if [[ -n ${VALHEIMWORLDMAP_PLUGIN_ZIP:-} ]]; then
+    unzip -p "$VALHEIMWORLDMAP_PLUGIN_ZIP" BepInEx/plugins/ValheimWorldMap.dll > "$plugins/ValheimWorldMap.dll"
+    cmp "$plugins/ValheimWorldMap.dll" "$plugin_dll"
 fi
-cp "$repo/tools/RuntimeRegression/bin/Release/net472/ValheimOne.RuntimeRegression.dll" "$plugins/"
-python3 - "$repo/tools/release/valheimone.cfg" "$config/valheimone.cfg" <<'PY'
+cp "$repo/tools/RuntimeRegression/bin/Release/net472/ValheimWorldMap.RuntimeRegression.dll" "$plugins/"
+python3 - "$repo/tools/release/valheimworldmap.cfg" "$config/valheimworldmap.cfg" <<'PY'
 import configparser, os, sys
 cfg=configparser.ConfigParser(interpolation=None, strict=False)
 cfg.optionxform=str
@@ -69,17 +69,17 @@ cfg['ProductionSpeeds'].update({'Enabled':'true','SmelterProductionSeconds':'5',
 cfg['LiveMap'].update({'Enabled':'true', 'ConsoleEnabled':'true', 'BindIp':'127.0.0.1',
     'Port':'24583', 'TextureSize':'512', 'AccessToken':os.environ['CONSOLE_PROBE_TOKEN'],
     'PublicView':'false', 'StatusPublic':'false'})
-if int(os.environ['VALHEIMONE_BROWSER_HOLD_SECONDS']) > 0:
+if int(os.environ['VALHEIMWORLDMAP_BROWSER_HOLD_SECONDS']) > 0:
     cfg['LiveMap'].update({'PublicView':'true', 'FogMode':'trails', 'FogHideUnexplored':'true',
         'PublicWebPins':'true', 'SharedPinEditing':'true',
         'ShareToken':'browser-regression-shared',
-        'BindIp':os.environ.get('VALHEIMONE_BROWSER_BIND', '127.0.0.1')})
+        'BindIp':os.environ.get('VALHEIMWORLDMAP_BROWSER_BIND', '127.0.0.1')})
 with open(sys.argv[2], 'w') as out: cfg.write(out)
 PY
 cp "$repo/tools/fixtures/SmokeWorld.fwl" "$repo/tools/fixtures/SmokeWorld.db" "$backup/worlds/worlds_local/"
 cd "$server"
 rm -f "$server/BepInEx/LogOutput.log"
-VALHEIMONE_RUNTIME_REGRESSION=1 VALHEIMONE_CONSOLE_PROBE=1 CONSOLE_PROBE_SETTLE_SECONDS=0 \
+VALHEIMWORLDMAP_RUNTIME_REGRESSION=1 VALHEIMWORLDMAP_CONSOLE_PROBE=1 CONSOLE_PROBE_SETTLE_SECONDS=0 \
 CONSOLE_PROBE_URL=http://127.0.0.1:24583 CONSOLE_PROBE_RESULT="$console_result" SteamAppId=892970 setsid bash -c '
     export DOORSTOP_ENABLED=1
     export DOORSTOP_TARGET_ASSEMBLY=./BepInEx/core/BepInEx.Preloader.dll

@@ -20,7 +20,7 @@ coverage/
 
 # Local game/mod output
 BepInEx/
-valheimone.cfg
+valheimworldmap.cfg
 *.log
 
 # Operating-system files
@@ -29,7 +29,7 @@ Thumbs.db
 
 # Release packaging
 tools/cache/
-!tools/release/valheimone.cfg
+!tools/release/valheimworldmap.cfg
 tools/contract-fingerprint.txt
 
 # Native seed worker runtime

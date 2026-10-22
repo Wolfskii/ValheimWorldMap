@@ -11,7 +11,7 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-version_file="${repo_root}/src/ValheimOne/Networking/VersionInfo.cs"
+version_file="${repo_root}/src/ValheimWorldMap/Networking/VersionInfo.cs"
 package_script="${repo_root}/tools/package-release.sh"
 provenance="${repo_root}/tools/release/provenance.tsv"
 valheim_buildid="${VALHEIM_BUILDID:-}"
@@ -76,9 +76,9 @@ package_bepinex="$(sed -nE 's/^bepinex_pack_version="([^"]+)"/\1/p' "${package_s
 [[ -n ${package_bepinex} ]] || fail "could not read the BepInEx pack pin from ${package_script}"
 actual_bepinex="${BEPINEX_VERSION:-${package_bepinex}}"
 
-dll="${repo_root}/src/ValheimOne/bin/Release/net472/ValheimOne.dll"
-plugin_zip="${repo_root}/artifacts/release/ValheimOne-${plugin_version}.zip"
-full_zip="${repo_root}/artifacts/release/ValheimOne-full-${plugin_version}.zip"
+dll="${repo_root}/src/ValheimWorldMap/bin/Release/net472/ValheimWorldMap.dll"
+plugin_zip="${repo_root}/artifacts/release/ValheimWorldMap-${plugin_version}.zip"
+full_zip="${repo_root}/artifacts/release/ValheimWorldMap-full-${plugin_version}.zip"
 
 hash_or_missing() {
     if [[ -s $1 ]]; then
@@ -114,9 +114,9 @@ printf 'provenance recorded at commit %s; this run builds %s\n' \
     "${recorded_commit}" "${actual_commit}"
 compare_value 'BepInEx pack' "${recorded_bepinex}" "${actual_bepinex}"
 compare_value 'Valheim build ID' "${recorded_buildid}" "${valheim_buildid}"
-compare_value 'ValheimOne.dll' "${expected_dll}" "${actual_dll}"
-compare_value "ValheimOne-${plugin_version}.zip" "${expected_plugin_zip}" "${actual_plugin_zip}"
-compare_value "ValheimOne-full-${plugin_version}.zip" "${expected_full_zip}" "${actual_full_zip}"
+compare_value 'ValheimWorldMap.dll' "${expected_dll}" "${actual_dll}"
+compare_value "ValheimWorldMap-${plugin_version}.zip" "${expected_plugin_zip}" "${actual_plugin_zip}"
+compare_value "ValheimWorldMap-full-${plugin_version}.zip" "${expected_full_zip}" "${actual_full_zip}"
 
 if [[ ${actual_bepinex} != "${package_bepinex}" ]]; then
     printf 'REPRODUCIBILITY MISMATCH: CI BepInEx toolchain vs packaging pin\n  expected: %s\n  actual:   %s\n' \

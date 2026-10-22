@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Asserts that ValheimOne's version is stated consistently everywhere.
+# Asserts that ValheimWorldMap's version is stated consistently everywhere.
 #
 # `VersionInfo.PluginVersion` is the single source of truth. This script fails
 # if the csproj version properties disagree with it, and — when a release tag is
@@ -14,8 +14,8 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-version_file="${repo_root}/src/ValheimOne/Networking/VersionInfo.cs"
-csproj="${repo_root}/src/ValheimOne/ValheimOne.csproj"
+version_file="${repo_root}/src/ValheimWorldMap/Networking/VersionInfo.cs"
+csproj="${repo_root}/src/ValheimWorldMap/ValheimWorldMap.csproj"
 changelog="${repo_root}/CHANGELOG.md"
 
 tag=""
@@ -69,7 +69,7 @@ for property in Version AssemblyVersion FileVersion; do
     values=$(read_csproj_property "${property}")
     count=$(printf '%s' "${values}" | grep -c . || true)
     if [[ ${count} -ne 1 ]]; then
-        fail "expected exactly one <${property}> in ValheimOne.csproj, found ${count}"
+        fail "expected exactly one <${property}> in ValheimWorldMap.csproj, found ${count}"
         continue
     fi
 

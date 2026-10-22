@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const filename = process.argv[2] || path.join(__dirname, '../../src/ValheimOne/LiveMap/web/app.js');
+const filename = process.argv[2] || path.join(__dirname, '../../src/ValheimWorldMap/LiveMap/web/app.js');
 const source = fs.readFileSync(filename, 'utf8');
 function extract(name) {
     const start = source.indexOf('    function ' + name + '(');

@@ -3,13 +3,13 @@
     <TargetFramework>net472</TargetFramework>
     <LangVersion>10</LangVersion>
     <Nullable>enable</Nullable>
-    <AssemblyName>ValheimOne.RuntimeRegression</AssemblyName>
+    <AssemblyName>ValheimWorldMap.RuntimeRegression</AssemblyName>
     <ValheimManaged Condition="'$(ValheimManaged)' == ''">$(HOME)/valheim-modding/server/valheim_server_Data/Managed</ValheimManaged>
     <ValheimPublicized Condition="'$(ValheimPublicized)' == ''">$(HOME)/valheim-modding/publicized</ValheimPublicized>
     <BepInExCore Condition="'$(BepInExCore)' == ''">$(HOME)/valheim-modding/bepinex/BepInExPack_Valheim/BepInEx/core</BepInExCore>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../../src/ValheimOne/ValheimOne.csproj" />
+    <ProjectReference Include="../../src/ValheimWorldMap/ValheimWorldMap.csproj" />
     <Reference Include="BepInEx"><HintPath>$(BepInExCore)/BepInEx.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="0Harmony"><HintPath>$(BepInExCore)/0Harmony.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="assembly_valheim"><HintPath>$(ValheimPublicized)/assembly_valheim_publicized.dll</HintPath><Private>false</Private></Reference>

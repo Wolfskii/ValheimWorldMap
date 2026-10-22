@@ -1,22 +1,23 @@
 # Changelog
 
-All notable changes to ValheimOne will be documented in this file. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and intends to use [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after its first release.
+All notable changes to ValheimWorldMap will be documented in this file. This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and intends to use [Semantic Versioning](https://semver.org/spec/v2.0.0.html) after its first release.
 
 ## [Unreleased]
 
 ### Added
 
 - Public maps can opt into extra world layers through `PublicPoiGroups` and `PublicEntityGroups`, plus `PublicChat`, `PublicLeaderboard`, `PublicEvents` and `PublicDungeonInteriors`. Existing public links still show only spawn and trader markers, with no ships, last-seen ghosts, chat, leaderboard, raid overlay or dungeon interiors, until the owner names additional groups or turns those switches on. Category keys such as `bosses`, `dungeons`, `spawners`, `ores`, `structures` and `live` select the same layer groups as the admin toggles. `FogHideUnexplored` with `FogMode = trails` or `explored` still withholds unexplored region names, points of interest, last-seen markers, ships, portals, carts, wards, beds, tombstones and dungeon interiors; an entity's route is cut to the explored cells at its newest end, so a boat that sailed in from unexplored water shows only its explored part. Public chat is read-only and hides the sender's name and position the way the public player layer does: the name needs `PublicShowPlayerNames`, and with `RespectInGameVisibility` a sender who is not on the public player layer has neither. Turning `PublicChat` off now also stops chat on `/api/events` streams that are already open. Admin and shared views are unchanged. These settings are server-authoritative and apply live.
-- With `MirrorChat = true`, LiveMap chat keeps the last 200 Say and Shout messages on disk (`chat-history.json` in the ValheimOne data directory) and reloads them after a plugin or container restart. `MirrorChat` stays off by default and remains the only switch for recording player chat; with it off nothing is captured or written, and the file is deleted at startup or when the setting is turned off. Whispers are never recorded.
+- With `MirrorChat = true`, LiveMap chat keeps the last 200 Say and Shout messages on disk (`chat-history.json` in the ValheimWorldMap data directory) and reloads them after a plugin or container restart. `MirrorChat` stays off by default and remains the only switch for recording player chat; with it off nothing is captured or written, and the file is deleted at startup or when the setting is turned off. Whispers are never recorded.
 - `[ActivityLog] FeedRetentionDays` (default 7) sets how many days of activity the LiveMap chronicle feed keeps. At startup the feed is rebuilt from at most 4 MB of the newest activity files, so a long retention on a busy server cannot stall the server starting.
 
 ### Changed
 
+- The project is now ValheimWorldMap, maintained by Wolfskii (Dawid Kaleta). It was renamed from ValheimOne, so the plugin ID is `com.wolfskii.valheimworldmap`, the DLL is `ValheimWorldMap.dll`, the config file is `valheimworldmap.cfg`, the console command is `vwm` instead of `vo`, and the network message names start with `VWM_`. Existing ValheimOne configuration is not picked up and the plugin does not talk to ValheimOne clients: copy your settings into the new file. The entries below 0.13.25 are the history of the original ValheimOne releases and keep the old name.
 - In-game Say and Shout now appear as a speech bubble over the speaking player's map marker for 10 seconds when `MirrorChat` is on. A new line from the same viking replaces the previous balloon. Server and website shouts stay in the chat log only. A chat line with no position, such as one the public view withholds, is listed in the chat panel but gets no bubble.
 
 ### Upgrade
 
-- Preserve existing configuration. The new public-layer keys default to the previous public map and `MirrorChat` keeps its default, so participating players do not need a client update.
+- Copy your settings from `valheimone.cfg` into the new `valheimworldmap.cfg` (the key names are unchanged), and update ValheimWorldMap on every participating player's PC as well as the server, because the network message names changed. The new public-layer keys default to the previous public map and `MirrorChat` keeps its default.
 
 ## [0.13.25] - 2026-10-19
 

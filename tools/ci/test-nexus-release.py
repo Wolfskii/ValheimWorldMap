@@ -41,15 +41,15 @@ class ReleaseSafety(unittest.TestCase):
             sync.release_version(self.release(), "v0.13.2")
 
     def test_plugin_group_must_exist_once_and_old_full_group_is_ignored(self):
-        plugin = {"id": "a", "name": "ValheimOne 0.13.2"}
-        full = {"id": "b", "name": "ValheimOne Full 0.13.2"}
+        plugin = {"id": "a", "name": "ValheimWorldMap 0.13.2"}
+        full = {"id": "b", "name": "ValheimWorldMap Full 0.13.2"}
         self.assertEqual(sync.select_plugin_group([plugin]), "a")
         log = io.StringIO()
         with contextlib.redirect_stdout(log):
             self.assertEqual(sync.select_plugin_group([full, plugin]), "a")
         self.assertIn("Full: old file group ignored", log.getvalue())
         for invalid in [[], [full], [plugin, plugin], [plugin, full, plugin],
-                        [{"id": "../another-mod", "name": "ValheimOne"}, full],
+                        [{"id": "../another-mod", "name": "ValheimWorldMap"}, full],
                         [{"id": "a", "name": "Another mod"}, full]]:
             with self.subTest(invalid=invalid), self.assertRaises(ValueError), \
                     contextlib.redirect_stdout(io.StringIO()):
@@ -68,7 +68,7 @@ class ReleaseSafety(unittest.TestCase):
     def test_altered_artifacts_are_rejected_even_with_same_filenames(self):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
-            names = ["ValheimOne-0.13.3.zip", "ValheimOne-full-0.13.3.zip"]
+            names = ["ValheimWorldMap-0.13.3.zip", "ValheimWorldMap-full-0.13.3.zip"]
             manifest = []
             for i, name in enumerate(names):
                 payload = f"fixture archive {i}".encode()
@@ -109,7 +109,7 @@ class ReleaseSafety(unittest.TestCase):
     def download_status(self):
         # Plugin-only download plus the old Full file as Nexus shows it today (quarantined).
         return {"data": {
-            "mod": {"name": "ValheimOne", "version": "0.13.10", "status": "published"},
+            "mod": {"name": "ValheimWorldMap", "version": "0.13.10", "status": "published"},
             "modFiles": [
                 {"fileId": 22082, "version": "0.13.10", "category": "MAIN", "primary": 1,
                  "manager": 0, "requirementsAlert": 1, "scannedV2": "VERIFIED"},
@@ -184,24 +184,24 @@ class ReleaseSafety(unittest.TestCase):
             return {"fileId": file_id, "name": name, "version": version, "category": category,
                     "primary": primary, "manager": manager, "requirementsAlert": 1, "scannedV2": scan}
         return {"data": {
-            "mod": {"name": "ValheimOne", "version": "0.13.24", "status": "published"},
-            "modFiles": [record(25316, "ValheimOne Full 0.13.20", "0.13.20", "OLD_VERSION", "QUARANTINED", manager=1),
-                         record(25756, "ValheimOne 0.13.24", "0.13.24", "MAIN", "VERIFIED", primary=1),
-                         record(25350, "ValheimOne Full 0.13.21", "0.13.21", "ARCHIVED", "QUARANTINED", manager=1),
-                         record(25584, "ValheimOne 0.13.23", "0.13.23", "OLD_VERSION", "VERIFIED")],
+            "mod": {"name": "ValheimWorldMap", "version": "0.13.24", "status": "published"},
+            "modFiles": [record(25316, "ValheimWorldMap Full 0.13.20", "0.13.20", "OLD_VERSION", "QUARANTINED", manager=1),
+                         record(25756, "ValheimWorldMap 0.13.24", "0.13.24", "MAIN", "VERIFIED", primary=1),
+                         record(25350, "ValheimWorldMap Full 0.13.21", "0.13.21", "ARCHIVED", "QUARANTINED", manager=1),
+                         record(25584, "ValheimWorldMap 0.13.23", "0.13.23", "OLD_VERSION", "VERIFIED")],
         }}
 
     def test_report_lists_every_file_newest_first_and_names_the_newest_download(self):
         with contextlib.redirect_stdout(io.StringIO()) as log:
             table = sync.report_files(self.todays_page())
         self.assertEqual([line for line in table.splitlines() if re.match(r"\| \d", line)], [
-            "| 25756 | ValheimOne 0.13.24 | 0.13.24 | MAIN | VERIFIED | yes |",
-            "| 25584 | ValheimOne 0.13.23 | 0.13.23 | OLD_VERSION | VERIFIED | yes |",
-            "| 25350 | ValheimOne Full 0.13.21 | 0.13.21 | ARCHIVED | QUARANTINED | no |",
-            "| 25316 | ValheimOne Full 0.13.20 | 0.13.20 | OLD_VERSION | QUARANTINED | no |",
+            "| 25756 | ValheimWorldMap 0.13.24 | 0.13.24 | MAIN | VERIFIED | yes |",
+            "| 25584 | ValheimWorldMap 0.13.23 | 0.13.23 | OLD_VERSION | VERIFIED | yes |",
+            "| 25350 | ValheimWorldMap Full 0.13.21 | 0.13.21 | ARCHIVED | QUARANTINED | no |",
+            "| 25316 | ValheimWorldMap Full 0.13.20 | 0.13.20 | OLD_VERSION | QUARANTINED | no |",
         ])
         self.assertIn("Newest downloadable plugin: 0.13.24 (file 25756, VERIFIED)", table)
-        self.assertIn("Nexus file 25350: ValheimOne Full 0.13.21, 0.13.21, ARCHIVED, QUARANTINED, downloadable: no",
+        self.assertIn("Nexus file 25350: ValheimWorldMap Full 0.13.21, 0.13.21, ARCHIVED, QUARANTINED, downloadable: no",
                       log.getvalue())
         self.assertIn("Nexus: Newest downloadable plugin: 0.13.24 (file 25756", log.getvalue())
 
@@ -212,10 +212,10 @@ class ReleaseSafety(unittest.TestCase):
         self.assertEqual(sync.newest_downloadable(sync.page_files(page)),
                          "Newest downloadable plugin: 0.13.23 (file 25584, VERIFIED)")
         files[3]["category"] = "ARCHIVED"
-        files.append({"fileId": 25800, "name": "ValheimOne Full 0.13.25", "version": "0.13.25",
+        files.append({"fileId": 25800, "name": "ValheimWorldMap Full 0.13.25", "version": "0.13.25",
                       "category": "MAIN", "scannedV2": "VERIFIED"})
         for status in ["QUEUED", "NOT_SCANNED", "unknown", None]:
-            files.append({"fileId": 25900, "name": "ValheimOne 0.13.26", "version": "0.13.26",
+            files.append({"fileId": 25900, "name": "ValheimWorldMap 0.13.26", "version": "0.13.26",
                           "category": "OLD_VERSION", "scannedV2": status})
             with self.subTest(status=status):
                 self.assertEqual(sync.newest_downloadable(sync.page_files(page)), "Newest downloadable "
@@ -267,7 +267,7 @@ class PluginOnlyMirror(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.folder = Path(tmp.name)
-        names = [f"ValheimOne-{self.VERSION}.zip", f"ValheimOne-full-{self.VERSION}.zip"]
+        names = [f"ValheimWorldMap-{self.VERSION}.zip", f"ValheimWorldMap-full-{self.VERSION}.zip"]
         manifest = []
         for i, name in enumerate(names):
             payload = f"fixture archive {i}".encode()
@@ -282,8 +282,8 @@ class PluginOnlyMirror(unittest.TestCase):
                         "digest": "sha256:" + hashlib.sha256(p.read_bytes()).hexdigest()}
                        for p in self.folder.iterdir()],
         }
-        self.groups = [{"id": self.FULL_GROUP, "name": "ValheimOne Full 0.13.2"},
-                       {"id": self.PLUGIN_GROUP, "name": "ValheimOne 0.13.2"}]
+        self.groups = [{"id": self.FULL_GROUP, "name": "ValheimWorldMap Full 0.13.2"},
+                       {"id": self.PLUGIN_GROUP, "name": "ValheimWorldMap 0.13.2"}]
         self.plugin_versions = [{"version": self.VERSION, "category": "main", "is_primary": True,
                                  "game_scoped_id": self.PLUGIN_FILE}]
         self.plugin_scan = "VERIFIED"
@@ -292,21 +292,21 @@ class PluginOnlyMirror(unittest.TestCase):
     def fake_nexus(self, path, payload=None):
         self.calls.append(path)
         if path == "/v3/games/valheim/mods/3571":
-            return {"data": {"id": "157", "game_scoped_id": "3571", "name": "ValheimOne", "game_id": "3667"}}
+            return {"data": {"id": "157", "game_scoped_id": "3571", "name": "ValheimWorldMap", "game_id": "3667"}}
         if path == "/v3/mods/157/files":
             return {"data": {"mod_files": self.groups}}
         if path == f"/v3/mod-files/{self.PLUGIN_GROUP}/versions":
             return {"data": {"versions": self.plugin_versions}}
         if path == "/v2/graphql":
-            files = [{"fileId": int(self.PLUGIN_FILE), "name": f"ValheimOne {self.VERSION}", "version": self.VERSION,
+            files = [{"fileId": int(self.PLUGIN_FILE), "name": f"ValheimWorldMap {self.VERSION}", "version": self.VERSION,
                       "category": "MAIN", "primary": 1, "manager": 0, "requirementsAlert": 1,
                       "scannedV2": self.plugin_scan}]
             if any(group["id"] == self.FULL_GROUP for group in self.groups):
-                files.append({"fileId": 25350, "name": "ValheimOne Full 0.13.2", "version": "0.13.2",
+                files.append({"fileId": 25350, "name": "ValheimWorldMap Full 0.13.2", "version": "0.13.2",
                               "category": "MAIN", "primary": 0, "manager": 1, "requirementsAlert": 0,
                               "scannedV2": "QUARANTINED"})
             return {"data": {
-                "mod": {"name": "ValheimOne", "version": self.VERSION, "status": "published"},
+                "mod": {"name": "ValheimWorldMap", "version": self.VERSION, "status": "published"},
                 "modFiles": files,
             }}
         if path == f"/v1/games/valheim/mods/md5_search/{self.plugin_md5}.json":
@@ -377,15 +377,15 @@ class PluginOnlyMirror(unittest.TestCase):
 
     def test_verify_writes_every_file_state_once_including_the_old_full_file(self):
         _, _, log = self.run_mode("prepare")
-        self.assertIn(f"Nexus file {self.PLUGIN_FILE}: ValheimOne {self.VERSION}, {self.VERSION}, MAIN, VERIFIED, "
+        self.assertIn(f"Nexus file {self.PLUGIN_FILE}: ValheimWorldMap {self.VERSION}, {self.VERSION}, MAIN, VERIFIED, "
                       "downloadable: yes", log)
         self.assertEqual(self.summary(), "")
         _, _, log = self.run_mode("verify")
         summary = self.summary()
         self.assertEqual(summary.count("### Nexus files on the page"), 1)
         self.assertEqual([line for line in summary.splitlines() if re.match(r"\| \d", line)], [
-            "| 25350 | ValheimOne Full 0.13.2 | 0.13.2 | MAIN | QUARANTINED | no |",
-            f"| {self.PLUGIN_FILE} | ValheimOne {self.VERSION} | {self.VERSION} | MAIN | VERIFIED | yes |",
+            "| 25350 | ValheimWorldMap Full 0.13.2 | 0.13.2 | MAIN | QUARANTINED | no |",
+            f"| {self.PLUGIN_FILE} | ValheimWorldMap {self.VERSION} | {self.VERSION} | MAIN | VERIFIED | yes |",
         ])
         self.assertIn(f"Newest downloadable plugin: {self.VERSION} (file {self.PLUGIN_FILE}, VERIFIED)", summary)
         self.assertIn(f"::notice::Nexus plugin {self.VERSION} scan cleared (VERIFIED)", log)
@@ -394,7 +394,7 @@ class PluginOnlyMirror(unittest.TestCase):
         self.plugin_scan = "QUARANTINED"
         with self.assertRaisesRegex(ValueError, "plugin archive is quarantined"):
             self.run_mode("prepare")
-        self.assertIn(f"| {self.PLUGIN_FILE} | ValheimOne {self.VERSION} | {self.VERSION} | MAIN | QUARANTINED | no |",
+        self.assertIn(f"| {self.PLUGIN_FILE} | ValheimWorldMap {self.VERSION} | {self.VERSION} | MAIN | QUARANTINED | no |",
                       self.summary())
         self.assertIn("Newest downloadable plugin: none", self.summary())
 
@@ -411,13 +411,13 @@ class PluginOnlyMirror(unittest.TestCase):
         self.assertEqual(self.summary(), "")
 
     def test_github_integrity_still_covers_both_zips(self):
-        (self.folder / f"ValheimOne-full-{self.VERSION}.zip").write_bytes(b"tampered")
+        (self.folder / f"ValheimWorldMap-full-{self.VERSION}.zip").write_bytes(b"tampered")
         with self.assertRaisesRegex(ValueError, "digest/size"):
             self.run_mode("verify")
 
     def test_description_is_one_short_line_whatever_the_release_notes(self):
         # Nexus's file form refuses a description over 255 characters (2026-10-14).
-        url = f"https://github.com/humangenome/ValheimOne/releases/tag/v{self.VERSION}"
+        url = f"https://github.com/Wolfskii/ValheimWorldMap/releases/tag/v{self.VERSION}"
         for body in ["notes", "x" * 300, "## Fixed\n\n- " + "long line " * 8000]:
             self.plugin_versions = []
             self.release["body"] = body
@@ -425,7 +425,7 @@ class PluginOnlyMirror(unittest.TestCase):
                 _, text, _ = self.run_mode("prepare")
                 outputs = parse_outputs(text)
                 self.assertEqual(outputs["description"],
-                                 f"ValheimOne {self.VERSION}. Full release notes: {url}")
+                                 f"ValheimWorldMap {self.VERSION}. Full release notes: {url}")
                 self.assertLessEqual(len(outputs["description"]), 255)
                 self.assertLessEqual(len(outputs["changelog"]), sync.CHANGELOG_MAX)
                 if len(body) <= sync.CHANGELOG_MAX:
@@ -477,7 +477,7 @@ class NexusFieldLimits(unittest.TestCase):
             sync.release_version(self.release("v" + self.LONGEST + "9"))
 
     def test_description_guard_fails_instead_of_sending_a_long_line(self):
-        with patch.object(sync, "REPOSITORY", "humangenome/" + "x" * 255), \
+        with patch.object(sync, "REPOSITORY", "wolfskii/" + "x" * 255), \
                 self.assertRaisesRegex(ValueError, "over 255"):
             sync.nexus_description("0.13.22")
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Packages ValheimOne release zips from a clean build.
+# Packages ValheimWorldMap release zips from a clean build.
 #
-#   ValheimOne-<version>.zip       plugin-only: drop onto an existing BepInEx server
-#   ValheimOne-full-<version>.zip  plugin + denikson BepInExPack_Valheim overlay for
+#   ValheimWorldMap-<version>.zip       plugin-only: drop onto an existing BepInEx server
+#   ValheimWorldMap-full-<version>.zip  plugin + denikson BepInExPack_Valheim overlay for
 #                                  from-scratch installs (Windows and Linux servers)
 #
-# Version is read from src/ValheimOne/Networking/VersionInfo.cs (the single
+# Version is read from src/ValheimWorldMap/Networking/VersionInfo.cs (the single
 # source of truth). Outputs land in artifacts/release/. Zips are deterministic
 # for a given build: fixed file timestamps, sorted entries, no extra fields.
 #
@@ -30,23 +30,23 @@ fail() { echo "package-release: $*" >&2; exit 1; }
 
 # ------------ version (single source of truth)
 
-version_file="${repo_root}/src/ValheimOne/Networking/VersionInfo.cs"
+version_file="${repo_root}/src/ValheimWorldMap/Networking/VersionInfo.cs"
 version="$(sed -n 's/.*PluginVersion = "\([0-9][^"]*\)".*/\1/p' "${version_file}")"
 [[ -n "${version}" ]] || fail "could not read PluginVersion from ${version_file}"
-echo "Packaging ValheimOne ${version}"
+echo "Packaging ValheimWorldMap ${version}"
 
 # ------------ clean build
 
-dll="${repo_root}/src/ValheimOne/bin/Release/net472/ValheimOne.dll"
+dll="${repo_root}/src/ValheimWorldMap/bin/Release/net472/ValheimWorldMap.dll"
 if ! ${skip_build}; then
-    rm -rf "${repo_root}/src/ValheimOne/bin" "${repo_root}/src/ValheimOne/obj"
+    rm -rf "${repo_root}/src/ValheimWorldMap/bin" "${repo_root}/src/ValheimWorldMap/obj"
     "${repo_root}/build.sh"
 fi
 [[ -f "${dll}" ]] || fail "missing build output ${dll}"
 
 # ------------ reference config sanity
 
-ref_cfg="${repo_root}/tools/release/valheimone.cfg"
+ref_cfg="${repo_root}/tools/release/valheimworldmap.cfg"
 [[ -f "${ref_cfg}" ]] || fail "missing reference config ${ref_cfg} (regenerate it; see RELEASING.md)"
 
 # Pristine defaults: Enabled = true is allowed only in [Server], [ActivityLog] and [Network].
@@ -61,7 +61,7 @@ grep -q '^\[Server\]' "${ref_cfg}" || fail "reference config is missing the [Ser
 # section registered in source should exist in the reference config.
 missing_sections="$(
     grep -rhoP 'Section\s*=>\s*"\K[^"]+' \
-        "${repo_root}/src/ValheimOne" --include='*.cs' | sort -u |
+        "${repo_root}/src/ValheimWorldMap" --include='*.cs' | sort -u |
     while read -r section; do
         grep -q "^\[${section}\]" "${ref_cfg}" || echo "[${section}]"
     done
@@ -94,8 +94,8 @@ make_zip() {
 overlay_plugin() {
     local stage_dir="$1"
     mkdir -p "${stage_dir}/BepInEx/plugins" "${stage_dir}/BepInEx/config"
-    cp "${dll}" "${stage_dir}/BepInEx/plugins/ValheimOne.dll"
-    cp "${ref_cfg}" "${stage_dir}/BepInEx/config/valheimone.cfg"
+    cp "${dll}" "${stage_dir}/BepInEx/plugins/ValheimWorldMap.dll"
+    cp "${ref_cfg}" "${stage_dir}/BepInEx/config/valheimworldmap.cfg"
 }
 
 # ------------ plugin-only zip
@@ -103,7 +103,7 @@ overlay_plugin() {
 plugin_stage="${stage_root}/plugin"
 mkdir -p "${plugin_stage}"
 overlay_plugin "${plugin_stage}"
-plugin_zip="${out_dir}/ValheimOne-${version}.zip"
+plugin_zip="${out_dir}/ValheimWorldMap-${version}.zip"
 make_zip "${plugin_stage}" "${plugin_zip}"
 
 # ------------ full zip (BepInExPack overlay)
@@ -127,7 +127,7 @@ unzip -q "${bepinex_pack_cache}" -d "${pack_extract}"
 cp -a "${pack_extract}/BepInExPack_Valheim/." "${full_stage}/"
 chmod +x "${full_stage}"/start_*_bepinex.sh 2>/dev/null || true
 overlay_plugin "${full_stage}"
-full_zip="${out_dir}/ValheimOne-full-${version}.zip"
+full_zip="${out_dir}/ValheimWorldMap-full-${version}.zip"
 make_zip "${full_stage}" "${full_zip}"
 
 # ------------ summary

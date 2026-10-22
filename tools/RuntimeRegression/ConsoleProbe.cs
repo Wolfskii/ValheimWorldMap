@@ -6,12 +6,12 @@ using System.Threading;
 using BepInEx;
 using HarmonyLib;
 
-namespace ValheimOne.RuntimeRegression;
+namespace ValheimWorldMap.RuntimeRegression;
 
 // Also loads beside older released DLLs: all observations use the game's public
-// API, so the probe does not depend on a particular ValheimOne internal ABI.
-[BepInPlugin("com.humangenome.valheimone.consoleprobe", "ValheimOne console probe", "1.0.0")]
-[BepInDependency("com.humangenome.valheimone")]
+// API, so the probe does not depend on a particular ValheimWorldMap internal ABI.
+[BepInPlugin("com.wolfskii.valheimworldmap.consoleprobe", "ValheimWorldMap console probe", "1.0.0")]
+[BepInDependency("com.wolfskii.valheimworldmap")]
 public sealed class ConsoleProbe : BaseUnityPlugin
 {
     private static volatile string _failure = "";
@@ -24,14 +24,14 @@ public sealed class ConsoleProbe : BaseUnityPlugin
 
     private void Awake()
     {
-        if (Environment.GetEnvironmentVariable("VALHEIMONE_CONSOLE_PROBE") != "1")
+        if (Environment.GetEnvironmentVariable("VALHEIMWORLDMAP_CONSOLE_PROBE") != "1")
         {
             enabled = false;
             return;
         }
         _resultPath = Environment.GetEnvironmentVariable("CONSOLE_PROBE_RESULT") ?? "";
         if (!Path.IsPathRooted(_resultPath)) throw new InvalidOperationException("A probe result path is required");
-        _harmony = new Harmony("com.humangenome.valheimone.consoleprobe");
+        _harmony = new Harmony("com.wolfskii.valheimworldmap.consoleprobe");
         _harmony.Patch(AccessTools.Method(typeof(Terminal.ConsoleCommand), "RunAction"),
             prefix: new HarmonyMethod(typeof(ConsoleProbe), nameof(CountAction)),
             finalizer: new HarmonyMethod(typeof(ConsoleProbe), nameof(CaptureFailure)));
@@ -94,7 +94,7 @@ public sealed class ConsoleProbe : BaseUnityPlugin
             }
             int settledSeconds = int.TryParse(Environment.GetEnvironmentVariable("CONSOLE_PROBE_SETTLE_SECONDS"), out int wait)
                 ? Math.Max(0, Math.Min(180, wait)) : 0;
-            string[] commands = { "save", "vo save", "banned", "save", "save" };
+            string[] commands = { "save", "vwm save", "banned", "save", "save" };
             for (int index = 0; index < commands.Length; index++)
             {
                 string command = commands[index];

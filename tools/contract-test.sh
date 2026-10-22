@@ -33,15 +33,15 @@ bepinex_log="${testserver}/BepInEx/LogOutput.log"
 world_name=SmokeWorld
 fixture_fwl="${repo_root}/tools/fixtures/${world_name}.fwl"
 fixture_db="${repo_root}/tools/fixtures/${world_name}.db"
-reference_cfg="${repo_root}/tools/release/valheimone.cfg"
+reference_cfg="${repo_root}/tools/release/valheimworldmap.cfg"
 overlay_cfg="${repo_root}/tools/fixtures/contract.cfg"
 config_dir="${testserver}/BepInEx/config"
-plugin_cfg="${config_dir}/valheimone.cfg"
+plugin_cfg="${config_dir}/valheimworldmap.cfg"
 candidate="${repo_root}/tools/contract-fingerprint.txt"
 golden="${repo_root}/tools/golden-fingerprint.txt"
 pass_record="${repo_root}/tools/contract-pass.txt"
-version_source="${repo_root}/src/ValheimOne/Networking/VersionInfo.cs"
-output_dll="${repo_root}/src/ValheimOne/bin/Release/net472/ValheimOne.dll"
+version_source="${repo_root}/src/ValheimWorldMap/Networking/VersionInfo.cs"
+output_dll="${repo_root}/src/ValheimWorldMap/bin/Release/net472/ValheimWorldMap.dll"
 harmony_exception_pattern='Harmony(Lib|X|Exception)?.*(patch(ing)? exception|exception.*patch|failed to patch|patching failed)|(patch(ing)? exception|failed to patch|patching failed).*Harmony(Lib|X|Exception)?'
 unity_log_error_pattern='\[(Error|Fatal)[[:space:]]*:[[:space:]]*Unity Log[[:space:]]*\]'
 missing_db_error='Failed to load world with name "SmokeWorld", data error MissingDB'
@@ -76,10 +76,10 @@ exec 9>"$testserver/.runtime-regression.lock"
 flock -n 9 || { echo 'Another native test is using this testserver.' >&2; exit 1; }
 "${repo_root}/build.sh" 9>&-
 mkdir -p -- "$plugin_dir"
-cp -f -- "$output_dll" "${plugin_dir}/ValheimOne.dll"
+cp -f -- "$output_dll" "${plugin_dir}/ValheimWorldMap.dll"
 
-backup_dir=$(mktemp -d "${TMPDIR:-/tmp}/valheimone-contract.XXXXXX")
-backup_cfg="${backup_dir}/valheimone.cfg"
+backup_dir=$(mktemp -d "${TMPDIR:-/tmp}/valheimworldmap-contract.XXXXXX")
+backup_cfg="${backup_dir}/valheimworldmap.cfg"
 # Valheim 1.0 migrates .fwl/.db into a same-named directory. Reusing the
 # savedir lets that newer tree override the pinned fixture on a later run.
 run_savedir="${backup_dir}/worlds"
@@ -213,7 +213,7 @@ classify_bepinex_errors() {
             done
 
             if grep -Eqi 'Harmony|BepInEx' <<< "$line" ||
-                grep -Fqi -- 'ValheimOne' <<< "$line"; then
+                grep -Fqi -- 'ValheimWorldMap' <<< "$line"; then
                 allowlisted=0
             fi
         fi
@@ -251,7 +251,7 @@ cleanup() {
     rmdir -- "$backup_dir" 2>/dev/null || true
 
     if (( restore_status )); then
-        printf 'ERROR: failed to restore the original valheimone.cfg file.\n' >&2
+        printf 'ERROR: failed to restore the original valheimworldmap.cfg file.\n' >&2
         status=1
     fi
     exit "$status"
@@ -301,7 +301,7 @@ server_args=(
     -public 0
 )
 
-VALHEIMONE_CONTRACT=1 setsid bash -c '
+VALHEIMWORLDMAP_CONTRACT=1 setsid bash -c '
     export DOORSTOP_ENABLED=1
     export DOORSTOP_TARGET_ASSEMBLY=./BepInEx/core/BepInEx.Preloader.dll
     export LD_LIBRARY_PATH="./doorstop_libs:${LD_LIBRARY_PATH:-}"
@@ -330,9 +330,9 @@ contract_ready=0
 deadline=$(( SECONDS + 240 ))
 while (( SECONDS < deadline )); do
     if [[ -r $bepinex_log ]] &&
-        grep -q 'VO_CONTRACT worldgen ' "$bepinex_log" &&
-        grep -q 'VO_CONTRACT patches ' "$bepinex_log" &&
-        grep -q 'VO_CONTRACT modules ' "$bepinex_log"; then
+        grep -q 'VWM_CONTRACT worldgen ' "$bepinex_log" &&
+        grep -q 'VWM_CONTRACT patches ' "$bepinex_log" &&
+        grep -q 'VWM_CONTRACT modules ' "$bepinex_log"; then
         contract_ready=1
         break
     fi
@@ -344,9 +344,9 @@ done
 
 if (( ! contract_ready )); then
     if group_is_alive; then
-        printf 'FAIL: timed out waiting for all three VO_CONTRACT diagnostics.\n' >&2
+        printf 'FAIL: timed out waiting for all three VWM_CONTRACT diagnostics.\n' >&2
     else
-        printf 'FAIL: contract server exited before all three VO_CONTRACT diagnostics appeared.\n' >&2
+        printf 'FAIL: contract server exited before all three VWM_CONTRACT diagnostics appeared.\n' >&2
     fi
 fi
 
@@ -368,20 +368,20 @@ if [[ ! -r $bepinex_log ]]; then
     failures=1
 else
     for category in worldgen patches modules; do
-        if ! grep -q "VO_CONTRACT ${category} " "$bepinex_log"; then
-            printf 'FAIL: VO_CONTRACT %s diagnostic was not found.\n' "$category" >&2
+        if ! grep -q "VWM_CONTRACT ${category} " "$bepinex_log"; then
+            printf 'FAIL: VWM_CONTRACT %s diagnostic was not found.\n' "$category" >&2
             failures=1
         fi
     done
 
-    plugin_evidence=$(grep -F 'Loading [ValheimOne' "$bepinex_log" | head -n 1 || true)
+    plugin_evidence=$(grep -F 'Loading [ValheimWorldMap' "$bepinex_log" | head -n 1 || true)
     if [[ -z $plugin_evidence ]]; then
-        plugin_evidence=$(grep -F -- 'ValheimOne' "$bepinex_log" \
+        plugin_evidence=$(grep -F -- 'ValheimWorldMap' "$bepinex_log" \
             | grep -E '\[Info[[:space:]]*:[[:space:]]*BepInEx\][[:space:]]+Loading' \
             | head -n 1 || true)
     fi
     if [[ -z $plugin_evidence ]]; then
-        printf 'FAIL: plugin load line not found for ValheimOne.\n' >&2
+        printf 'FAIL: plugin load line not found for ValheimWorldMap.\n' >&2
         failures=1
     fi
 
@@ -416,9 +416,9 @@ fi
 
 extract_contract_line() {
     local category=$1
-    grep "VO_CONTRACT ${category} " "$bepinex_log" \
+    grep "VWM_CONTRACT ${category} " "$bepinex_log" \
         | tail -n 1 \
-        | sed -E "s/^.*(VO_CONTRACT ${category} .*)$/\\1/" \
+        | sed -E "s/^.*(VWM_CONTRACT ${category} .*)$/\\1/" \
         | tr -d '\r'
 }
 
@@ -456,9 +456,9 @@ if cmp -s -- "$golden" "$candidate"; then
 fi
 
 printf 'CONTRACT DRIFT\n' >&2
-golden_worldgen=$(grep '^VO_CONTRACT worldgen ' "$golden" | tail -n 1 || true)
-golden_patches=$(grep '^VO_CONTRACT patches ' "$golden" | tail -n 1 || true)
-golden_modules=$(grep '^VO_CONTRACT modules ' "$golden" | tail -n 1 || true)
+golden_worldgen=$(grep '^VWM_CONTRACT worldgen ' "$golden" | tail -n 1 || true)
+golden_patches=$(grep '^VWM_CONTRACT patches ' "$golden" | tail -n 1 || true)
+golden_modules=$(grep '^VWM_CONTRACT modules ' "$golden" | tail -n 1 || true)
 
 if [[ $golden_worldgen != "$worldgen_line" ]]; then
     printf 'WORLDGEN DRIFT: invalidate map caches and review worldgen changes.\n' >&2

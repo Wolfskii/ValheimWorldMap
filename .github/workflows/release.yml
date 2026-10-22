@@ -1,6 +1,6 @@
 name: Release
 
-# Packages a ValheimOne release the same way RELEASING.md does by hand, and
+# Packages a ValheimWorldMap release the same way RELEASING.md does by hand, and
 # creates the GitHub release as a DRAFT with all three artifacts attached.
 #
 # Drafts are deliberate: nothing is ever published by CI. Publishing is a
@@ -70,7 +70,7 @@ jobs:
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
-          echo "Releasing ValheimOne ${version} (dry_run=${DRY_RUN})"
+          echo "Releasing ValheimWorldMap ${version} (dry_run=${DRY_RUN})"
 
       - name: Set up Valheim toolchain
         id: toolchain
@@ -108,7 +108,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VALHEIMONE_PLUGIN_ZIP="${PWD}/artifacts/release/ValheimOne-${{ steps.version.outputs.version }}.zip" \
+          VALHEIMWORLDMAP_PLUGIN_ZIP="${PWD}/artifacts/release/ValheimWorldMap-${{ steps.version.outputs.version }}.zip" \
             tools/runtime-regression.sh
 
       - name: Assert deterministic packaging
@@ -121,15 +121,15 @@ jobs:
           out="artifacts/release"
           first="${RUNNER_TEMP}/first-pass"
           mkdir -p "${first}"
-          cp "${out}/ValheimOne-${VERSION}.zip" \
-             "${out}/ValheimOne-full-${VERSION}.zip" \
+          cp "${out}/ValheimWorldMap-${VERSION}.zip" \
+             "${out}/ValheimWorldMap-full-${VERSION}.zip" \
              "${out}/SHA256SUMS-${VERSION}.txt" \
              "${first}/"
 
           # Re-package from the same build output; the zips must come out byte-identical.
           tools/package-release.sh --skip-build
 
-          for f in "ValheimOne-${VERSION}.zip" "ValheimOne-full-${VERSION}.zip" "SHA256SUMS-${VERSION}.txt"; do
+          for f in "ValheimWorldMap-${VERSION}.zip" "ValheimWorldMap-full-${VERSION}.zip" "SHA256SUMS-${VERSION}.txt"; do
             if ! cmp -s "${first}/${f}" "${out}/${f}"; then
               echo "::error::packaging is not deterministic: ${f} differs between two runs"
               exit 1
@@ -151,8 +151,8 @@ jobs:
           set -euo pipefail
 
           out="artifacts/release"
-          plugin_zip="${out}/ValheimOne-${VERSION}.zip"
-          full_zip="${out}/ValheimOne-full-${VERSION}.zip"
+          plugin_zip="${out}/ValheimWorldMap-${VERSION}.zip"
+          full_zip="${out}/ValheimWorldMap-full-${VERSION}.zip"
           sums="${out}/SHA256SUMS-${VERSION}.txt"
 
           for f in "${plugin_zip}" "${full_zip}" "${sums}"; do
@@ -163,26 +163,26 @@ jobs:
 
           # Plugin zip is exactly the plugin and its pristine config.
           plugin_entries="$(unzip -Z1 "${plugin_zip}" | LC_ALL=C sort | tr '\n' ' ')"
-          expected="BepInEx/config/valheimone.cfg BepInEx/plugins/ValheimOne.dll "
+          expected="BepInEx/config/valheimworldmap.cfg BepInEx/plugins/ValheimWorldMap.dll "
           if [[ "${plugin_entries}" != "${expected}" ]]; then
             echo "::error::unexpected plugin zip contents: ${plugin_entries}"
             exit 1
           fi
 
           # The shipped config must be the checked-in reference config, byte for byte.
-          unzip -p "${plugin_zip}" BepInEx/config/valheimone.cfg > "${RUNNER_TEMP}/shipped.cfg"
-          cmp "${RUNNER_TEMP}/shipped.cfg" tools/release/valheimone.cfg
+          unzip -p "${plugin_zip}" BepInEx/config/valheimworldmap.cfg > "${RUNNER_TEMP}/shipped.cfg"
+          cmp "${RUNNER_TEMP}/shipped.cfg" tools/release/valheimworldmap.cfg
 
           # The shipped DLL must be this run's build output.
-          unzip -p "${plugin_zip}" BepInEx/plugins/ValheimOne.dll > "${RUNNER_TEMP}/shipped.dll"
-          cmp "${RUNNER_TEMP}/shipped.dll" src/ValheimOne/bin/Release/net472/ValheimOne.dll
+          unzip -p "${plugin_zip}" BepInEx/plugins/ValheimWorldMap.dll > "${RUNNER_TEMP}/shipped.dll"
+          cmp "${RUNNER_TEMP}/shipped.dll" src/ValheimWorldMap/bin/Release/net472/ValheimWorldMap.dll
 
           # Full zip carries the pinned BepInEx pack alongside the plugin.
           for entry in \
             BepInEx/core/BepInEx.dll \
             BepInEx/core/0Harmony.dll \
-            BepInEx/plugins/ValheimOne.dll \
-            BepInEx/config/valheimone.cfg \
+            BepInEx/plugins/ValheimWorldMap.dll \
+            BepInEx/config/valheimworldmap.cfg \
             doorstop_libs/libdoorstop_x64.so \
             doorstop_config.ini \
             winhttp.dll \
@@ -212,8 +212,8 @@ jobs:
           # Positive control: the gate finds the link in the GitHub DLL, so "absent" below is a real result.
           python3 tools/ci/hosting-credit-gate.py "${RUNNER_TEMP}/shipped.dll" --hosting-credit present
           tools/package-thunderstore.sh
-          ts_zip="artifacts/release/ValheimOne-${VERSION}-thunderstore.zip"
-          unzip -p "${ts_zip}" plugins/ValheimOne.dll > "${RUNNER_TEMP}/thunderstore.dll"
+          ts_zip="artifacts/release/ValheimWorldMap-${VERSION}-thunderstore.zip"
+          unzip -p "${ts_zip}" plugins/ValheimWorldMap.dll > "${RUNNER_TEMP}/thunderstore.dll"
           python3 tools/ci/hosting-credit-gate.py "${RUNNER_TEMP}/thunderstore.dll" --hosting-credit absent
           if unzip -p "${ts_zip}" | grep -a -i -E 'survivalservers|server hosting by|utm_'; then
             echo "::error::the Thunderstore archive mentions a host"
@@ -224,42 +224,42 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VALHEIMONE_PLUGIN_DLL="${RUNNER_TEMP}/thunderstore.dll" tools/runtime-regression.sh
+          VALHEIMWORLDMAP_PLUGIN_DLL="${RUNNER_TEMP}/thunderstore.dll" tools/runtime-regression.sh
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ValheimOne-release-${{ steps.version.outputs.version }}
+          name: ValheimWorldMap-release-${{ steps.version.outputs.version }}
           path: |
-            artifacts/release/ValheimOne-${{ steps.version.outputs.version }}.zip
-            artifacts/release/ValheimOne-full-${{ steps.version.outputs.version }}.zip
+            artifacts/release/ValheimWorldMap-${{ steps.version.outputs.version }}.zip
+            artifacts/release/ValheimWorldMap-full-${{ steps.version.outputs.version }}.zip
             artifacts/release/SHA256SUMS-${{ steps.version.outputs.version }}.txt
           if-no-files-found: error
 
       - name: Upload the Thunderstore archive as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ValheimOne-thunderstore-${{ steps.version.outputs.version }}
-          path: artifacts/release/ValheimOne-${{ steps.version.outputs.version }}-thunderstore.zip
+          name: ValheimWorldMap-thunderstore-${{ steps.version.outputs.version }}
+          path: artifacts/release/ValheimWorldMap-${{ steps.version.outputs.version }}-thunderstore.zip
           if-no-files-found: error
 
       - name: Create or update the draft release
         if: env.DRY_RUN != 'true'
         shell: bash
         env:
-          # HUMANGENOME_PAT so the release object is authored by the account,
+          # RELEASE_PAT so the release object is authored by the account,
           # not github-actions[bot]. Falls back to the workflow token if the
           # secret is ever removed — the draft still lands, only the author
           # byline degrades.
-          GH_TOKEN: ${{ secrets.HUMANGENOME_PAT || github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
 
           out="artifacts/release"
           assets=(
-            "${out}/ValheimOne-${VERSION}.zip"
-            "${out}/ValheimOne-full-${VERSION}.zip"
+            "${out}/ValheimWorldMap-${VERSION}.zip"
+            "${out}/ValheimWorldMap-full-${VERSION}.zip"
             "${out}/SHA256SUMS-${VERSION}.txt"
           )
 
@@ -271,8 +271,8 @@ jobs:
             echo
             echo "## Install"
             echo
-            echo "- \`ValheimOne-${VERSION}.zip\` — plugin only, for servers already running BepInEx 5.4.x."
-            echo "- \`ValheimOne-full-${VERSION}.zip\` — plugin plus the BepInEx pack, for a from-scratch install."
+            echo "- \`ValheimWorldMap-${VERSION}.zip\` — plugin only, for servers already running BepInEx 5.4.x."
+            echo "- \`ValheimWorldMap-full-${VERSION}.zip\` — plugin plus the BepInEx pack, for a from-scratch install."
             echo
             echo "## Checksums"
             echo
@@ -287,7 +287,7 @@ jobs:
             gh release create "${RELEASE_TAG}" \
               --draft \
               --verify-tag \
-              --title "ValheimOne ${VERSION}" \
+              --title "ValheimWorldMap ${VERSION}" \
               --notes-file "${notes}" \
               "${assets[@]}"
             echo "Created draft release ${RELEASE_TAG}"
@@ -317,7 +317,7 @@ jobs:
 
           gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name' | LC_ALL=C sort > "${RUNNER_TEMP}/assets.txt"
           cat "${RUNNER_TEMP}/assets.txt"
-          for f in "SHA256SUMS-${VERSION}.txt" "ValheimOne-${VERSION}.zip" "ValheimOne-full-${VERSION}.zip"; do
+          for f in "SHA256SUMS-${VERSION}.txt" "ValheimWorldMap-${VERSION}.zip" "ValheimWorldMap-full-${VERSION}.zip"; do
             grep -Fxq "${f}" "${RUNNER_TEMP}/assets.txt" || {
               echo "::error::draft release ${RELEASE_TAG} is missing asset ${f}"
               exit 1
@@ -333,7 +333,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "## ValheimOne release ${VERSION}"
+            echo "## ValheimWorldMap release ${VERSION}"
             echo
             echo "- Tag: \`${RELEASE_TAG}\`"
             echo "- Dry run: \`${DRY_RUN}\`"

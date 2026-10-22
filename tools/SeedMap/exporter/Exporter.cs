@@ -10,9 +10,9 @@ using System.Text.RegularExpressions;
 using BepInEx;
 using HarmonyLib;
 using UnityEngine;
-using ValheimOne.LiveMap;
+using ValheimWorldMap.LiveMap;
 
-[BepInPlugin("com.humangenome.seedpreview.probe", "Seed Preview Exporter", "0.1.0")]
+[BepInPlugin("com.wolfskii.seedpreview.probe", "Seed Preview Exporter", "0.1.0")]
 public sealed class SeedPreviewExporter : BaseUnityPlugin
 {
     private static string Seed = "";
@@ -35,13 +35,13 @@ public sealed class SeedPreviewExporter : BaseUnityPlugin
 
     private void Awake()
     {
-        Seed = Environment.GetEnvironmentVariable("VO_PREVIEW_SEED") ?? "";
-        _output = Environment.GetEnvironmentVariable("VO_PREVIEW_OUTPUT") ?? "";
-        _size = int.TryParse(Environment.GetEnvironmentVariable("VO_PREVIEW_SIZE"), out int size) ? size : 1024;
+        Seed = Environment.GetEnvironmentVariable("VWM_PREVIEW_SEED") ?? "";
+        _output = Environment.GetEnvironmentVariable("VWM_PREVIEW_OUTPUT") ?? "";
+        _size = int.TryParse(Environment.GetEnvironmentVariable("VWM_PREVIEW_SIZE"), out int size) ? size : 1024;
         if (!Regex.IsMatch(Seed, "^[A-Za-z0-9]{1,10}$") || !Path.IsPathRooted(_output) || _size < 64 || _size > 2048)
             throw new InvalidOperationException("Invalid isolated exporter inputs");
         Directory.CreateDirectory(_output);
-        var harmony = new Harmony("com.humangenome.seedpreview.probe");
+        var harmony = new Harmony("com.wolfskii.seedpreview.probe");
         harmony.Patch(
             AccessTools.Method(typeof(World), "GetCreateWorld"),
             new HarmonyMethod(typeof(SeedPreviewExporter), nameof(CreatePreviewWorld)));
@@ -77,7 +77,7 @@ public sealed class SeedPreviewExporter : BaseUnityPlugin
             if (_generator == null)
             {
                 if (WorldGenerator.instance == null || ZoneSystem.instance == null) return;
-                if (Environment.GetEnvironmentVariable("VO_PREVIEW_DEFER_TERRAIN") == "1" && !ZoneSystem.instance.LocationsGenerated) return;
+                if (Environment.GetEnvironmentVariable("VWM_PREVIEW_DEFER_TERRAIN") == "1" && !ZoneSystem.instance.LocationsGenerated) return;
                 var world = AccessTools.Field(typeof(WorldGenerator), "m_world").GetValue(WorldGenerator.instance) as World;
                 if (world == null || world.m_seedName != Seed) return;
                 _samplingStarted = _clock.Elapsed.TotalSeconds;
@@ -164,7 +164,7 @@ public sealed class SeedPreviewExporter : BaseUnityPlugin
     }
 }
 
-namespace ValheimOne.LiveMap
+namespace ValheimWorldMap.LiveMap
 {
     // The shared shading code uses this same radius in the released renderer.
     internal static class WorldMapRenderer

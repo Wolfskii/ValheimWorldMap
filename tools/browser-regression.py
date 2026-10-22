@@ -19,7 +19,7 @@ with sync_playwright() as pw:
     try:
         for width in (1280, 390):
             context = browser.new_context(viewport={'width': width, 'height': 900})
-            context.add_init_script("localStorage.setItem('vo-livemap-layers-v2', JSON.stringify({fog:false}));")
+            context.add_init_script("localStorage.setItem('vwm-livemap-layers-v2', JSON.stringify({fog:false}));")
             # Exercise the native HTTP polling fallback so later status changes
             # can be injected without writing server configuration.
             context.add_init_script("window.EventSource = undefined;")
@@ -99,7 +99,7 @@ with sync_playwright() as pw:
         results.append({'native_shared_pin_create_edit_delete': 'pass', 'native_public_pin_rejection': 'pass'})
         context.close()
 
-        admin_token = os.environ.get('VALHEIMONE_BROWSER_ADMIN_TOKEN', '')
+        admin_token = os.environ.get('VALHEIMWORLDMAP_BROWSER_ADMIN_TOKEN', '')
         if admin_token:
             context = browser.new_context(viewport={'width': 1280, 'height': 900},
                 extra_http_headers={'X-LiveMap-Token': admin_token})

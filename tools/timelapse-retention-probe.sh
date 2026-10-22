@@ -18,14 +18,14 @@ cat > "${scratch_dir}/RetentionProbe.csproj" <<EOF
     <ImplicitUsings>disable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="${project_root}/src/ValheimOne/LiveMap/TimelapseRetention.cs" Link="TimelapseRetention.cs" />
-    <Compile Include="${project_root}/src/ValheimOne/LiveMap/TimelapseRecorder.cs" Link="TimelapseRecorder.cs" />
+    <Compile Include="${project_root}/src/ValheimWorldMap/LiveMap/TimelapseRetention.cs" Link="TimelapseRetention.cs" />
+    <Compile Include="${project_root}/src/ValheimWorldMap/LiveMap/TimelapseRecorder.cs" Link="TimelapseRecorder.cs" />
   </ItemGroup>
 </Project>
 EOF
 
 cat > "${scratch_dir}/Shims.cs" <<'EOF'
-namespace ValheimOne.Infrastructure
+namespace ValheimWorldMap.Infrastructure
 {
     public sealed class ModLogger
     {
@@ -39,7 +39,7 @@ namespace ValheimOne.Infrastructure
     }
 }
 
-namespace ValheimOne.LiveMap
+namespace ValheimWorldMap.LiveMap
 {
     internal static class JsonWriter
     {
@@ -116,8 +116,8 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Text;
-using ValheimOne.Infrastructure;
-using ValheimOne.LiveMap;
+using ValheimWorldMap.Infrastructure;
+using ValheimWorldMap.LiveMap;
 
 internal static class Program
 {
@@ -262,7 +262,7 @@ internal static class Program
     {
         string root = Path.Combine(
             Path.GetTempPath(),
-            "valheimone-retention-" + Guid.NewGuid().ToString("N"));
+            "valheimworldmap-retention-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
         {

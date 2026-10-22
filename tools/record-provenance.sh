@@ -11,7 +11,7 @@ set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 global_json="${repo_root}/global.json"
-version_file="${repo_root}/src/ValheimOne/Networking/VersionInfo.cs"
+version_file="${repo_root}/src/ValheimWorldMap/Networking/VersionInfo.cs"
 package_script="${repo_root}/tools/package-release.sh"
 provenance="${repo_root}/tools/release/provenance.tsv"
 server_manifest="${VALHEIM_SERVER_DIR:-${HOME}/valheim-modding/server}/steamapps/appmanifest_896660.acf"
@@ -58,7 +58,7 @@ if ! resolved_sdk="$(cd "${repo_root}" && dotnet --version 2>/dev/null)"; then
     resolved_sdk="not found"
 fi
 if [[ ${resolved_sdk} != "${pinned_sdk}" ]]; then
-    printf 'record-provenance: ValheimOne requires .NET SDK %s, but dotnet resolved to %s.\n' \
+    printf 'record-provenance: ValheimWorldMap requires .NET SDK %s, but dotnet resolved to %s.\n' \
         "${pinned_sdk}" "${resolved_sdk}" >&2
     printf 'Install it with:\n' >&2
     printf '  curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --version %s --install-dir "$HOME/.dotnet"\n' \
@@ -84,9 +84,9 @@ else
     "${package_script}"
 fi
 
-dll="${repo_root}/src/ValheimOne/bin/Release/net472/ValheimOne.dll"
-plugin_zip="${repo_root}/artifacts/release/ValheimOne-${version}.zip"
-full_zip="${repo_root}/artifacts/release/ValheimOne-full-${version}.zip"
+dll="${repo_root}/src/ValheimWorldMap/bin/Release/net472/ValheimWorldMap.dll"
+plugin_zip="${repo_root}/artifacts/release/ValheimWorldMap-${version}.zip"
+full_zip="${repo_root}/artifacts/release/ValheimWorldMap-full-${version}.zip"
 for artifact in "${dll}" "${plugin_zip}" "${full_zip}"; do
     [[ -s ${artifact} ]] || fail "missing or empty release artifact ${artifact}"
 done
