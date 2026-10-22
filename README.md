@@ -1,8 +1,4 @@
 <p align="center">
-  <img src="docs/brand/hero.png" alt="ValheimOne" width="100%">
-</p>
-
-<p align="center">
   <b>A live web map and browser admin console for Valheim dedicated servers.</b><br>
   Share the map with your players, search every item and recipe, get Discord alerts and turn on optional gameplay rules for your world.<br>
   The map and admin tools work with vanilla clients.
