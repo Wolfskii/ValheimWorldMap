@@ -8728,6 +8728,9 @@
         });
 
         var playerRecord = matchingPlayerMarker(chat.playerName);
+        if (!playerRecord && !chat.hasPosition) {
+            return;
+        }
         var anchor = playerRecord
             ? playerRecord.marker.getLatLng()
             : worldToLatLng(chat.x, chat.z);
@@ -8815,21 +8818,21 @@
         }
 
         var sequence = Number(payload.sequence);
-        var x = Number(payload.x);
-        var z = Number(payload.z);
+        var x = typeof payload.x === "number" ? payload.x : NaN;
+        var z = typeof payload.z === "number" ? payload.z : NaN;
         var unixMs = Number(payload.unixMs);
         var playerName = typeof payload.playerName === "string"
             ? payload.playerName.trim()
             : "";
         var text = typeof payload.text === "string" ? payload.text.trim() : "";
         if (!Number.isFinite(sequence) || sequence <= 0 ||
-            !Number.isFinite(x) || !Number.isFinite(z) ||
             !Number.isFinite(unixMs) || unixMs <= 0 ||
             !text) {
             return null;
         }
 
         return {
+            hasPosition: Number.isFinite(x) && Number.isFinite(z),
             playerName: playerName || "A viking",
             receivedAt: Date.now(),
             sequence: Math.floor(sequence),

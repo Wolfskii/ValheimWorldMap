@@ -1241,13 +1241,26 @@ internal sealed class LiveMapHttpServer
                     sentEvent = true;
                 }
 
+                // PublicChat can be switched off while a stream is open, so check it every tick.
+                sendChat = UpdateChatStream(
+                    sendChat,
+                    ChatAvailable(viewLevel),
+                    () => MapPingPatch.LatestChatCursor,
+                    ref chatCursor);
                 if (sendChat)
                 {
                     chatCursor = MapPingPatch.CopyChatAfter(chatCursor, pendingChats);
-                    for (int index = 0; index < pendingChats.Count; index++)
+                    if (pendingChats.Count > 0)
                     {
-                        WriteEventStreamEvent(output, "chat", BuildChatJson(pendingChats[index]));
-                        sentEvent = true;
+                        HashSet<string>? senders = GetVisibleChatSenders(viewLevel);
+                        for (int index = 0; index < pendingChats.Count; index++)
+                        {
+                            WriteEventStreamEvent(
+                                output,
+                                "chat",
+                                BuildChatJson(pendingChats[index], viewLevel, senders));
+                            sentEvent = true;
+                        }
                     }
                 }
 
@@ -2614,6 +2627,11 @@ internal sealed class LiveMapHttpServer
         PositionSample[] points = _positionHistory.Snapshot(
             historyKey,
             windowSeconds * 1000L);
+        if (!isPlayer && viewLevel != ViewLevel.Admin && GetEffectiveFogHide(viewLevel))
+        {
+            points = TrimTrailToExplored(points, _fogTracker.Snapshot);
+        }
+
         long unixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var json = new StringBuilder(96 + (points.Length * 48));
         json.Append('{');
@@ -2640,6 +2658,30 @@ internal sealed class LiveMapHttpServer
         json.Append("],\"unixMs\":").Append(unixMs.ToString(CultureInfo.InvariantCulture));
         json.Append('}');
         WriteJson(response, HttpStatusCode.OK, json.ToString());
+    }
+
+    // A fogged view may only see the part of an entity's route that lies in explored cells.
+    // The history is oldest first, so keep the run that ends at the newest sample and stops
+    // at the first unexplored one going back. Keeping every explored point instead would
+    // draw a straight line across the unexplored stretch between two explored runs.
+    internal static PositionSample[] TrimTrailToExplored(
+        PositionSample[] points,
+        FogMaskSnapshot fog)
+    {
+        int first = points.Length;
+        while (first > 0 && FogTracker.IsExplored(fog, points[first - 1].X, points[first - 1].Z))
+        {
+            first--;
+        }
+
+        if (first == 0)
+        {
+            return points;
+        }
+
+        var kept = new PositionSample[points.Length - first];
+        Array.Copy(points, first, kept, 0, kept.Length);
+        return kept;
     }
 
     private bool IsPlayerVisibleToPublic(long playerId)
@@ -2878,15 +2920,95 @@ internal sealed class LiveMapHttpServer
         return "{\"revision\":" + revision.ToString(CultureInfo.InvariantCulture) + "}";
     }
 
-    private static string BuildChatJson(MapChatSnapshot chat)
+    // Whether an open event stream sends chat this tick. A stream whose chat was switched
+    // off sends none, and when it comes back on it starts from the newest line rather than
+    // replaying what was said in between.
+    internal static bool UpdateChatStream(
+        bool wasSending,
+        bool available,
+        Func<long> latestCursor,
+        ref long cursor)
+    {
+        if (available && !wasSending)
+        {
+            cursor = latestCursor();
+        }
+
+        return available;
+    }
+
+    // The public view treats a chat line like the player layer treats a player: the sender's
+    // name needs PublicShowPlayerNames, and with RespectInGameVisibility the name and the
+    // position are withheld unless that player is one the public map lists.
+    private string BuildChatJson(
+        MapChatSnapshot chat,
+        ViewLevel viewLevel,
+        HashSet<string>? visibleSenders)
+    {
+        if (viewLevel != ViewLevel.Public)
+        {
+            return BuildChatJson(chat, showName: true, showPosition: true);
+        }
+
+        ResolvePublicChatDisclosure(
+            chat,
+            visibleSenders,
+            _publicShowPlayerNames,
+            out bool showName,
+            out bool showPosition);
+        return BuildChatJson(chat, showName, showPosition);
+    }
+
+    // Null means every sender is listed: the viewer is not public, or the map ignores
+    // in-game visibility. Otherwise it holds the names of the players the public map lists.
+    private HashSet<string>? GetVisibleChatSenders(ViewLevel viewLevel)
+    {
+        if (viewLevel != ViewLevel.Public || SeesAllPlayers(ViewLevel.Public))
+        {
+            return null;
+        }
+
+        var senders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        LiveMapPlayerSnapshot[] players = _getSnapshot().Players;
+        for (int index = 0; index < players.Length; index++)
+        {
+            if (players[index].IsPublic)
+            {
+                senders.Add((players[index].Name ?? string.Empty).Trim());
+            }
+        }
+
+        return senders;
+    }
+
+    internal static void ResolvePublicChatDisclosure(
+        MapChatSnapshot chat,
+        HashSet<string>? visibleSenders,
+        bool publicShowPlayerNames,
+        out bool showName,
+        out bool showPosition)
+    {
+        bool senderListed = chat.ServerOriginated ||
+                            visibleSenders == null ||
+                            visibleSenders.Contains((chat.PlayerName ?? string.Empty).Trim());
+        showPosition = senderListed;
+        showName = chat.ServerOriginated || (senderListed && publicShowPlayerNames);
+    }
+
+    internal static string BuildChatJson(MapChatSnapshot chat, bool showName, bool showPosition)
     {
         var json = new StringBuilder(384);
         json.Append('{');
         json.Append("\"sequence\":").Append(
             chat.Sequence.ToString(CultureInfo.InvariantCulture));
-        json.Append(",\"x\":").Append(JsonWriter.Number(chat.X));
-        json.Append(",\"z\":").Append(JsonWriter.Number(chat.Z));
-        json.Append(",\"playerName\":").Append(JsonWriter.Quote(chat.PlayerName));
+        if (showPosition)
+        {
+            json.Append(",\"x\":").Append(JsonWriter.Number(chat.X));
+            json.Append(",\"z\":").Append(JsonWriter.Number(chat.Z));
+        }
+
+        json.Append(",\"playerName\":").Append(JsonWriter.Quote(
+            showName ? chat.PlayerName : string.Empty));
         json.Append(",\"text\":").Append(JsonWriter.Quote(chat.Text));
         json.Append(",\"shout\":").Append(chat.Shout ? "true" : "false");
         json.Append(",\"unixMs\":").Append(
@@ -2905,6 +3027,7 @@ internal sealed class LiveMapHttpServer
 
         var chats = new List<MapChatSnapshot>(ChatHistoryStore.Capacity);
         MapPingPatch.CopyChatAfter(0L, chats);
+        HashSet<string>? senders = GetVisibleChatSenders(viewLevel);
         var json = new StringBuilder(16 + (chats.Count * 384));
         json.Append("{\"chats\":[");
         for (int index = 0; index < chats.Count; index++)
@@ -2914,7 +3037,7 @@ internal sealed class LiveMapHttpServer
                 json.Append(',');
             }
 
-            json.Append(BuildChatJson(chats[index]));
+            json.Append(BuildChatJson(chats[index], viewLevel, senders));
         }
 
         json.Append("]}");

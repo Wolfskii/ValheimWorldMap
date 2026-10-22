@@ -107,10 +107,11 @@ public sealed class LiveMapModule : IFeatureModule
             "more revealing than a live position dot, so opening it is an explicit owner decision.");
         ConfigEntryBool mirrorChat = _feature.Bool(
             "MirrorChat",
-            true,
-            "Compatibility setting. Player Say and Shout are recorded for the live map and the " +
-            "public hall whenever LiveMap is enabled, including ordinary enter-to-talk lines. " +
-            "The last 200 lines persist in chat-history.json and reload after a restart.");
+            false,
+            "Mirror player Say and Shout chat onto authenticated live-map views. " +
+            "Disabled by default because chat is player speech and the server owner must " +
+            "explicitly opt in. When enabled, the last 200 Say and Shout lines persist in " +
+            "chat-history.json and reload after a restart; turning it off deletes that file.");
         ConfigEntryBool respectInGameVisibility = _feature.Bool(
             "RespectInGameVisibility",
             true,
@@ -175,8 +176,9 @@ public sealed class LiveMapModule : IFeatureModule
             "PublicChat",
             false,
             "Show the read-only chat panel on the tokenless public view. Off by default because " +
-            "chat is player speech. The public view never gains a send box. Player Say and Shout " +
-            "are recorded whenever LiveMap is enabled.");
+            "chat is player speech. The public view never gains a send box. MirrorChat still " +
+            "controls whether player Say and Shout are captured, and PublicShowPlayerNames and " +
+            "RespectInGameVisibility decide which sender names and positions the public view sees.");
         ConfigEntryBool publicLeaderboard = _feature.Bool(
             "PublicLeaderboard",
             false,

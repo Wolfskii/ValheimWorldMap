@@ -121,6 +121,8 @@ internal static class MapPingPatch
     private static int _chatCount;
     private static long _nextServerChatCaptureId;
     private static ChatHistoryStore? _chatHistoryStore;
+    private static string _chatDataDirectory = string.Empty;
+    private static bool _chatHistoryFileMayExist;
     private static int _failureLogged;
 
     public static void ApplyPatches(
@@ -132,7 +134,6 @@ internal static class MapPingPatch
     {
         _enabledCheck = enabledCheck;
         _mirrorChatCheck = mirrorChatCheck;
-        _ = _mirrorChatCheck;
         _log = log;
         ConfigureChatPersistence(dataDirectory, log);
         MethodInfo handleRoutedRpc = AccessTools.Method(
@@ -179,6 +180,7 @@ internal static class MapPingPatch
     {
         get
         {
+            ClearChatBufferWhenDisabled();
             lock (RecentChatsLock)
             {
                 return _nextChatSequence;
@@ -189,6 +191,11 @@ internal static class MapPingPatch
     public static long CopyChatAfter(long cursor, List<MapChatSnapshot> destination)
     {
         destination.Clear();
+        if (!ChatMirroringEnabled())
+        {
+            ClearRecentPlayerChats();
+        }
+
         lock (RecentChatsLock)
         {
             int firstIndex =
@@ -208,6 +215,8 @@ internal static class MapPingPatch
 
     public static void RefreshChatConfiguration()
     {
+        ClearChatBufferWhenDisabled();
+        SynchronizeChatPersistence();
     }
 
     public static long ExpectServerChat(string text)
@@ -285,8 +294,20 @@ internal static class MapPingPatch
             var parameters = new ZPackage(data.m_parameters.GetArray());
             Vector3 position = parameters.ReadVector3();
             int type = parameters.ReadInt();
-            if (type != PingType && !IsSpokenChat(type))
+            bool mirrorChat = ChatMirroringEnabled();
+            if (!mirrorChat)
             {
+                ClearRecentPlayerChats();
+            }
+
+            if (type != PingType && type != SayType && type != ShoutType)
+            {
+                return;
+            }
+
+            if (type != PingType && !mirrorChat)
+            {
+                // Do not even materialize player speech from the package while disabled.
                 return;
             }
 
@@ -323,8 +344,15 @@ internal static class MapPingPatch
                 return;
             }
 
+            // Recheck after decoding so a hot reload that disables mirroring cannot race a write.
+            if (!ChatMirroringEnabled())
+            {
+                ClearRecentPlayerChats();
+                return;
+            }
+
             string playerName = (name ?? string.Empty).Trim();
-            bool serverOriginated = IsShout(type) &&
+            bool serverOriginated = type == ShoutType &&
                                     string.Equals(playerName, "Server", StringComparison.Ordinal) &&
                                     string.Equals(userId, ServerUserId, StringComparison.Ordinal);
             lock (RecentChatsLock)
@@ -341,7 +369,7 @@ internal static class MapPingPatch
                     position.z,
                     playerName,
                     text,
-                    IsShout(type),
+                    type == ShoutType,
                     unixMs,
                     serverOriginated);
             }
@@ -364,16 +392,57 @@ internal static class MapPingPatch
         }
     }
 
-    private static bool IsSpokenChat(int type)
+    private static bool ChatMirroringEnabled()
     {
-        // Valheim has shipped both Whisper=0,Normal=1,Shout=2 and Normal=0,Shout=1.
-        // Keep every spoken line. Only the historical shout value is styled as a shout.
-        return type == 0 || type == SayType || type == ShoutType;
+        return _enabledCheck?.Invoke() == true && _mirrorChatCheck?.Invoke() == true;
     }
 
-    private static bool IsShout(int type)
+    private static void ClearChatBufferWhenDisabled()
     {
-        return type == ShoutType;
+        if (!ChatMirroringEnabled())
+        {
+            ClearRecentPlayerChats();
+        }
+    }
+
+    private static void ClearRecentPlayerChats()
+    {
+        lock (RecentChatsLock)
+        {
+            int firstIndex =
+                (_nextChatIndex - _chatCount + RecentChatCapacity) % RecentChatCapacity;
+            bool containsPlayerChat = false;
+            for (int offset = 0; offset < _chatCount; offset++)
+            {
+                if (!RecentChats[(firstIndex + offset) % RecentChatCapacity].ServerOriginated)
+                {
+                    containsPlayerChat = true;
+                    break;
+                }
+            }
+
+            if (!containsPlayerChat)
+            {
+                return;
+            }
+
+            var retained = new MapChatSnapshot[RecentChatCapacity];
+            int retainedCount = 0;
+            for (int offset = 0; offset < _chatCount; offset++)
+            {
+                MapChatSnapshot chat =
+                    RecentChats[(firstIndex + offset) % RecentChatCapacity];
+                if (chat.ServerOriginated)
+                {
+                    retained[retainedCount++] = chat;
+                }
+            }
+
+            Array.Clear(RecentChats, 0, RecentChats.Length);
+            Array.Copy(retained, RecentChats, retainedCount);
+            _nextChatIndex = retainedCount % RecentChatCapacity;
+            _chatCount = retainedCount;
+        }
     }
 
     private static void AppendChatLocked(
@@ -488,6 +557,8 @@ internal static class MapPingPatch
         store?.Dispose();
     }
 
+    // chat-history.json exists only while MirrorChat is on: it is read, written and kept
+    // only then, and switching MirrorChat off (or finding it off at startup) deletes it.
     private static void ConfigureChatPersistence(string dataDirectory, ModLogger log)
     {
         ChatHistoryStore? previous;
@@ -495,11 +566,19 @@ internal static class MapPingPatch
         {
             previous = _chatHistoryStore;
             _chatHistoryStore = null;
+            _chatDataDirectory = dataDirectory;
+            _chatHistoryFileMayExist = true;
         }
 
         previous?.Dispose();
         if (string.IsNullOrWhiteSpace(dataDirectory))
         {
+            return;
+        }
+
+        if (!ChatMirroringEnabled())
+        {
+            DiscardChatHistoryFile();
             return;
         }
 
@@ -510,6 +589,67 @@ internal static class MapPingPatch
             _chatHistoryStore = store;
             HydrateChatLocked(loaded);
         }
+    }
+
+    private static void SynchronizeChatPersistence()
+    {
+        if (string.IsNullOrWhiteSpace(_chatDataDirectory))
+        {
+            return;
+        }
+
+        if (!ChatMirroringEnabled())
+        {
+            ChatHistoryStore? retired;
+            lock (RecentChatsLock)
+            {
+                retired = _chatHistoryStore;
+                _chatHistoryStore = null;
+            }
+
+            if (retired != null)
+            {
+                retired.Discard();
+            }
+            else
+            {
+                DiscardChatHistoryFile();
+            }
+
+            return;
+        }
+
+        ModLogger? log = _log;
+        if (log == null)
+        {
+            return;
+        }
+
+        lock (RecentChatsLock)
+        {
+            if (_chatHistoryStore == null)
+            {
+                _chatHistoryStore = new ChatHistoryStore(_chatDataDirectory, log);
+                _chatHistoryFileMayExist = true;
+            }
+        }
+    }
+
+    private static void DiscardChatHistoryFile()
+    {
+        string directory;
+        lock (RecentChatsLock)
+        {
+            if (!_chatHistoryFileMayExist)
+            {
+                return;
+            }
+
+            _chatHistoryFileMayExist = false;
+            directory = _chatDataDirectory;
+        }
+
+        ChatHistoryStore.DeleteFile(directory, _log);
     }
 
     private static void HydrateChatLocked(MapChatSnapshot[] loaded)
@@ -538,7 +678,7 @@ internal static class MapPingPatch
     private static void PersistChatLocked()
     {
         ChatHistoryStore? store = _chatHistoryStore;
-        if (store == null)
+        if (store == null || !ChatMirroringEnabled())
         {
             return;
         }

@@ -15,7 +15,10 @@ internal sealed class ChatHistoryStore : IDisposable
     private const int WriteDebounceMilliseconds = 750;
     private const int ShutdownFlushMilliseconds = 2000;
 
+    private const string FileName = "chat-history.json";
+
     private readonly object _lock = new object();
+    private readonly object _fileLock = new object();
     private readonly AutoResetEvent _writeSignal = new AutoResetEvent(false);
     private readonly ManualResetEvent _stopSignal = new ManualResetEvent(false);
     private readonly string _path;
@@ -25,6 +28,7 @@ internal sealed class ChatHistoryStore : IDisposable
     private int _dirty;
     private int _writeFailureWarningLogged;
     private bool _disposed;
+    private bool _discarded;
 
     public ChatHistoryStore(string dataDirectory, ModLogger log)
     {
@@ -34,7 +38,7 @@ internal sealed class ChatHistoryStore : IDisposable
         }
 
         _log = log ?? throw new ArgumentNullException(nameof(log));
-        _path = Path.Combine(dataDirectory, "chat-history.json");
+        _path = Path.Combine(dataDirectory, FileName);
         _writerThread = new Thread(RunWriter)
         {
             IsBackground = true,
@@ -88,49 +92,104 @@ internal sealed class ChatHistoryStore : IDisposable
 
         lock (_lock)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             _pending = chats;
             Volatile.Write(ref _dirty, 1);
             _writeSignal.Set();
         }
     }
 
-    public void Dispose()
+    // Stops the writer without writing what is pending and deletes the file, for when
+    // MirrorChat is switched off and the stored player speech has to go with it.
+    public void Discard()
     {
-        if (_disposed)
+        lock (_lock)
+        {
+            _discarded = true;
+            _pending = Array.Empty<MapChatSnapshot>();
+            Volatile.Write(ref _dirty, 0);
+        }
+
+        Dispose();
+        lock (_fileLock)
+        {
+            DeleteFile(Path.GetDirectoryName(_path), _log);
+        }
+    }
+
+    public static void DeleteFile(string? dataDirectory, ModLogger? log)
+    {
+        if (string.IsNullOrWhiteSpace(dataDirectory))
         {
             return;
         }
 
-        _disposed = true;
+        string path = Path.Combine(dataDirectory, FileName);
+        try
+        {
+            File.Delete(path);
+            File.Delete(path + ".tmp");
+        }
+        catch (Exception exception)
+        {
+            log?.Warning(
+                $"[LiveMap] chat history file could not be deleted " +
+                $"({exception.GetType().Name}: {SingleLineMessage(exception)}).");
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_lock)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+        }
+
         _stopSignal.Set();
         if (!_writerThread.Join(ShutdownFlushMilliseconds))
         {
+            // The wait handles belong to the writer: it disposes them when it exits, so a
+            // slow disk write never sees a handle disposed underneath it.
             _log.Warning("[LiveMap] chat history writer did not flush within the shutdown window.");
         }
-
-        _writeSignal.Dispose();
-        _stopSignal.Dispose();
     }
 
     private void RunWriter()
     {
-        WaitHandle[] signals = { _writeSignal, _stopSignal };
-        while (true)
+        try
         {
-            int signal = WaitHandle.WaitAny(signals);
-            if (signal == 1)
+            WaitHandle[] signals = { _writeSignal, _stopSignal };
+            while (true)
             {
-                FlushPendingWrite();
-                return;
-            }
+                int signal = WaitHandle.WaitAny(signals);
+                if (signal == 1)
+                {
+                    FlushPendingWrite();
+                    return;
+                }
 
-            if (_stopSignal.WaitOne(WriteDebounceMilliseconds))
-            {
-                FlushPendingWrite();
-                return;
-            }
+                if (_stopSignal.WaitOne(WriteDebounceMilliseconds))
+                {
+                    FlushPendingWrite();
+                    return;
+                }
 
-            FlushPendingWrite();
+                FlushPendingWrite();
+            }
+        }
+        finally
+        {
+            _writeSignal.Dispose();
+            _stopSignal.Dispose();
         }
     }
 
@@ -144,12 +203,26 @@ internal sealed class ChatHistoryStore : IDisposable
         MapChatSnapshot[] snapshot;
         lock (_lock)
         {
+            if (_discarded)
+            {
+                return;
+            }
+
             snapshot = _pending;
         }
 
         try
         {
-            Persist(snapshot);
+            lock (_fileLock)
+            {
+                if (IsDiscarded())
+                {
+                    return;
+                }
+
+                Persist(snapshot);
+            }
+
             Interlocked.Exchange(ref _writeFailureWarningLogged, 0);
         }
         catch (Exception exception)
@@ -167,6 +240,14 @@ internal sealed class ChatHistoryStore : IDisposable
             {
                 _writeSignal.Set();
             }
+        }
+    }
+
+    private bool IsDiscarded()
+    {
+        lock (_lock)
+        {
+            return _discarded;
         }
     }
 

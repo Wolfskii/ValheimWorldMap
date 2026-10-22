@@ -188,11 +188,13 @@ Saving the file applies most changes live, without a restart. Preserve your exis
 
 All of these live in `[LiveMap]`. Set `FogMode = trails` or `explored` to record the fog you want to display. The default fog is a translucent tint over the full terrain.
 
-`FogHideUnexplored = true` gives the Public view a solid cover and withholds unexplored region names and spawn and trader markers. Public viewers cannot turn it off. Check the tokenless link before you share it.
+`FogHideUnexplored = true` gives the Public view a solid cover and withholds unexplored region names and every marker the Public view is allowed to show. Public viewers cannot turn it off. Check the tokenless link before you share it.
 
 `SharedFog = true` gives Shared viewers the same locked cover while keeping chat and stats. It defaults to false.
 
 `SharedPoiGroups = all` keeps every point-of-interest layer in the Shared view. Use `none` to hide them, or a space-separated list such as `spawn trader` to show only those groups. The [group keys](docs/query.md#shared-point-of-interest-groups) are in the API reference.
+
+The Public view shows spawn and trader markers and nothing else until you name more. `PublicPoiGroups` and `PublicEntityGroups` are allowlists like `SharedPoiGroups`: list single groups, or category keys such as `bosses`, `dungeons`, `spawners`, `ores`, `structures` and `live` (last seen) to take a whole layer section. Ships, portals, carts, wards, beds and tombstones also need `EntityLayer = true` and a list such as `PublicEntityGroups = ship portal`. `PublicChat`, `PublicLeaderboard`, `PublicEvents` and `PublicDungeonInteriors` each add one read-only feature and default to off. Under `FogHideUnexplored`, the extra markers, boat routes and dungeon interiors show only in explored cells; chat, the leaderboard and raid events are not fog-gated. Public chat needs `MirrorChat = true`, has no send box, and hides sender names and positions the way the Public player layer does (`PublicShowPlayerNames`, `RespectInGameVisibility`). The [API reference](docs/query.md#public-point-of-interest-and-entity-groups) has the details.
 
 Admins can switch on **Fog preview** under Layers to keep unexplored areas covered on their own map. It starts off, also hides unexplored markers and region names, and does not change admin permissions. It needs `FogMode` set.
 

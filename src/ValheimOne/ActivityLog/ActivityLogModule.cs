@@ -42,7 +42,8 @@ public sealed class ActivityLogModule : IFeatureModule
         ConfigEntryInt feedRetentionDays = _feature.Int(
             "FeedRetentionDays",
             7,
-            "Days of activity kept in the LiveMap chronicle feed, clamped to 1..3650.");
+            "Days of activity kept in the LiveMap chronicle feed, clamped to 1..3650. The feed is " +
+            "read back at startup from at most 4 MB of the newest activity files.");
         _config = new ActivityLogConfig(retentionDays, feedRetentionDays);
         _worker = new ActivityLogWorker(
             dataDirectory,

@@ -77,6 +77,7 @@ public sealed class RuntimeRegression : BaseUnityPlugin
             TestValheimOneZeroData();
             TestDropsChestLoot();
             TestNetworkSendLimit();
+            PublicLayerRegression.Run(Check, _root, new ModLogger(Logger));
             string result = $"RUNTIME REGRESSION PASS assertions={_assertions} game={(global::Version.GetVersionString())}";
             Logger.LogInfo(result);
             File.WriteAllText(Path.Combine(_root, "result.txt"), result + "\n");

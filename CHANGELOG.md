@@ -6,16 +6,17 @@ All notable changes to ValheimOne will be documented in this file. This project 
 
 ### Added
 
-- Public maps can opt into extra world layers through `PublicPoiGroups` and `PublicEntityGroups`, plus `PublicChat`, `PublicLeaderboard`, and `PublicEvents`. Existing public links still show only spawn and trader markers, with no ships, last-seen ghosts, chat, leaderboard, or raid overlay, until the owner names additional groups or turns those switches on. Category keys such as `bosses`, `dungeons`, `spawners`, `ores`, and `structures` select the same layer groups as the admin toggles. `FogHideUnexplored` with `FogMode = trails` or `explored` still withholds unexplored region names, points of interest, last-seen markers, ships, portals, carts, wards, beds, and tombstones. Admin and shared views are unchanged. These settings are server-authoritative.
-- LiveMap chat now keeps the last 200 Say and Shout messages on disk (`chat-history.json` in the ValheimOne data directory) and reloads them after a plugin or container restart. Ordinary enter-to-talk Say lines are included with Shout.
+- Public maps can opt into extra world layers through `PublicPoiGroups` and `PublicEntityGroups`, plus `PublicChat`, `PublicLeaderboard`, `PublicEvents` and `PublicDungeonInteriors`. Existing public links still show only spawn and trader markers, with no ships, last-seen ghosts, chat, leaderboard, raid overlay or dungeon interiors, until the owner names additional groups or turns those switches on. Category keys such as `bosses`, `dungeons`, `spawners`, `ores`, `structures` and `live` select the same layer groups as the admin toggles. `FogHideUnexplored` with `FogMode = trails` or `explored` still withholds unexplored region names, points of interest, last-seen markers, ships, portals, carts, wards, beds, tombstones and dungeon interiors; an entity's route is cut to the explored cells at its newest end, so a boat that sailed in from unexplored water shows only its explored part. Public chat is read-only and hides the sender's name and position the way the public player layer does: the name needs `PublicShowPlayerNames`, and with `RespectInGameVisibility` a sender who is not on the public player layer has neither. Turning `PublicChat` off now also stops chat on `/api/events` streams that are already open. Admin and shared views are unchanged. These settings are server-authoritative and apply live.
+- With `MirrorChat = true`, LiveMap chat keeps the last 200 Say and Shout messages on disk (`chat-history.json` in the ValheimOne data directory) and reloads them after a plugin or container restart. `MirrorChat` stays off by default and remains the only switch for recording player chat; with it off nothing is captured or written, and the file is deleted at startup or when the setting is turned off. Whispers are never recorded.
+- `[ActivityLog] FeedRetentionDays` (default 7) sets how many days of activity the LiveMap chronicle feed keeps. At startup the feed is rebuilt from at most 4 MB of the newest activity files, so a long retention on a busy server cannot stall the server starting.
 
 ### Changed
 
-- In-game Say and Shout now appear as a speech bubble over the speaking player's map marker for 10 seconds. A new line from the same viking replaces the previous balloon. Server and website shouts stay in the chat log only.
+- In-game Say and Shout now appear as a speech bubble over the speaking player's map marker for 10 seconds when `MirrorChat` is on. A new line from the same viking replaces the previous balloon. Server and website shouts stay in the chat log only. A chat line with no position, such as one the public view withholds, is listed in the chat panel but gets no bubble.
 
 ### Upgrade
 
-- Preserve existing configuration. The new public-layer keys default to the previous public map, so participating players do not need a client update.
+- Preserve existing configuration. The new public-layer keys default to the previous public map and `MirrorChat` keeps its default, so participating players do not need a client update.
 
 ## [0.13.25] - 2026-10-19
 

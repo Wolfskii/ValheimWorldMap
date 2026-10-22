@@ -14,6 +14,7 @@ internal sealed class ActivityLogWorker
     private const int QueueCapacity = 512;
     private const int HistoryCapacity = 200;
     private const int ActivityFeedSafetyCap = 20000;
+    private const int ActivitySeedMaximumBytes = 4 * 1024 * 1024;
     private const int BatchDelayMilliseconds = 250;
     private const int DateCheckMilliseconds = 60000;
 
@@ -768,12 +769,17 @@ internal sealed class ActivityLogWorker
         }
     }
 
+    // Runs in the constructor, so it reads at most ActivitySeedMaximumBytes in total: the
+    // newest files first, and only the tail of the file the budget runs out in. A long
+    // FeedRetentionDays on a busy server then costs a bounded startup read, not every file.
     private void LoadRecentActivity()
     {
         int retentionDays = FeedRetentionDays();
         DateTime today = DateTime.UtcNow.Date;
         long cutoff = DateTimeOffset.UtcNow.AddDays(-retentionDays).ToUnixTimeMilliseconds();
-        for (int age = retentionDays - 1; age >= 0; age--)
+        var newestFirst = new List<List<string>>();
+        long remainingBytes = ActivitySeedMaximumBytes;
+        for (int age = 0; age < retentionDays && remainingBytes > 0L; age++)
         {
             string path = Path.Combine(
                 DataDirectory,
@@ -785,24 +791,15 @@ internal sealed class ActivityLogWorker
 
             try
             {
-                using (var stream = new FileStream(
-                           path,
-                           FileMode.Open,
-                           FileAccess.Read,
-                           FileShare.ReadWrite))
-                using (var reader = new StreamReader(stream, Encoding.UTF8))
+                newestFirst.Add(ReadActivityTail(
+                    path,
+                    remainingBytes,
+                    out long bytesRead,
+                    out bool truncated));
+                remainingBytes -= bytesRead;
+                if (truncated)
                 {
-                    string line;
-                    while ((line = reader.ReadLine()) != null)
-                    {
-                        if (!ActivityEventJsonParser.TryParse(line, out ActivityEventRecord record) ||
-                            record.UnixMs < cutoff)
-                        {
-                            continue;
-                        }
-
-                        AppendActivityFeed(record);
-                    }
+                    break;
                 }
             }
             catch (Exception exception)
@@ -813,9 +810,107 @@ internal sealed class ActivityLogWorker
             }
         }
 
+        for (int day = newestFirst.Count - 1; day >= 0; day--)
+        {
+            List<string> lines = newestFirst[day];
+            for (int index = 0; index < lines.Count; index++)
+            {
+                if (ActivityEventJsonParser.TryParse(lines[index], out ActivityEventRecord record) &&
+                    record.UnixMs >= cutoff)
+                {
+                    AppendActivityFeed(record);
+                }
+            }
+        }
+
         lock (_activityFeedLock)
         {
             PruneActivityFeedLocked();
+        }
+    }
+
+    private static List<string> ReadActivityTail(
+        string path,
+        long maximumBytes,
+        out long bytesRead,
+        out bool truncated)
+    {
+        var lines = new List<string>();
+        using (var stream = new FileStream(
+                   path,
+                   FileMode.Open,
+                   FileAccess.Read,
+                   FileShare.ReadWrite))
+        {
+            long start = Math.Max(0L, stream.Length - maximumBytes);
+            int byteCount = (int)(stream.Length - start);
+            var buffer = new byte[byteCount];
+            stream.Position = start;
+            int read = 0;
+            while (read < byteCount)
+            {
+                int current = stream.Read(buffer, read, byteCount - read);
+                if (current <= 0)
+                {
+                    break;
+                }
+
+                read += current;
+            }
+
+            bytesRead = read;
+            truncated = start > 0L;
+            int lineStart = 0;
+            if (truncated)
+            {
+                // The cut usually lands inside a line; drop that partial line.
+                while (lineStart < read && buffer[lineStart] != (byte)'\n')
+                {
+                    lineStart++;
+                }
+
+                if (lineStart < read)
+                {
+                    lineStart++;
+                }
+            }
+
+            for (int index = lineStart; index < read; index++)
+            {
+                if (buffer[index] != (byte)'\n')
+                {
+                    continue;
+                }
+
+                AddActivityLine(lines, buffer, lineStart, index - lineStart);
+                lineStart = index + 1;
+            }
+
+            if (lineStart < read)
+            {
+                AddActivityLine(lines, buffer, lineStart, read - lineStart);
+            }
+        }
+
+        return lines;
+    }
+
+    private static void AddActivityLine(List<string> lines, byte[] buffer, int start, int count)
+    {
+        if (count > 0 && buffer[start + count - 1] == (byte)'\r')
+        {
+            count--;
+        }
+
+        if (count <= 0)
+        {
+            return;
+        }
+
+        string line = Encoding.UTF8.GetString(buffer, start, count);
+        if (!string.IsNullOrWhiteSpace(line))
+        {
+            lines.Add(line);
         }
     }
 
