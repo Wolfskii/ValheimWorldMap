@@ -1,20 +1,12 @@
 name: Nexus release mirror
 
 'on':
-  push:
-    paths: ['.github/workflows/nexus.yml', 'tools/ci/*nexus*']
-  pull_request:
-    paths: ['.github/workflows/nexus.yml', 'tools/ci/*nexus*']
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       upload:
         description: Upload the plugin-only archive if Nexus lacks the latest published stable release
         type: boolean
         default: false
-  schedule:
-    - cron: '23 */6 * * *'
 
 permissions:
   contents: read
@@ -35,7 +27,7 @@ jobs:
 
   mirror:
     needs: checks
-    if: github.repository == 'Wolfskii/ValheimWorldMap' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'release' && github.event.release.prerelease == false))
+    if: github.repository == 'Wolfskii/ValheimWorldMap' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -54,7 +46,7 @@ jobs:
         run: python3 tools/ci/nexus-release.py prepare --directory "$RUNNER_TEMP/nexus-release"
 
       - name: Mirror plugin-only archive
-        if: steps.prepare.outputs.plugin_upload == 'true' && (github.event_name == 'release' || inputs.upload == true)
+        if: steps.prepare.outputs.plugin_upload == 'true' && inputs.upload == true
         uses: Nexus-Mods/upload-action@c96019556046053aa26044b44396cd38929daf23
         with:
           api_key: ${{ secrets.NEXUSMODS_API_KEY }}

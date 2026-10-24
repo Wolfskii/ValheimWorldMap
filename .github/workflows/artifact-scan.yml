@@ -2,19 +2,12 @@ name: Artifact scan
 
 # Refuses to let a published release asset carry never-publish material.
 #
-# Three triggers, because no single one is sufficient:
-#   release        immediate feedback when a release is published or edited
-#   schedule       catches an asset added to an existing release - GitHub emits NO event
-#                  for an asset upload, so a release trigger alone cannot see one
-#   dispatch       on demand
+# Manual only: run it from the Actions tab (workflow_dispatch) before or after a
+# release. It never runs on a schedule or on release events.
 #
 # Detect only. It never deletes, edits or replaces anything.
 
 on:
-  release:
-    types: [published, released, prereleased, edited, created]
-  schedule:
-    - cron: '17 5 * * *'
   workflow_dispatch:
     inputs:
       tag:

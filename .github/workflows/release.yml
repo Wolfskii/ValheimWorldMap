@@ -6,17 +6,11 @@ name: Release
 # Drafts are deliberate: nothing is ever published by CI. Publishing is a
 # release-day decision made by a human.
 #
-# Triggers:
-#   - pushing a `v*` tag       -> full run against that tag
-#   - workflow_dispatch        -> runs against the dispatched ref; `tag` is the
-#                                 tag the version must match, `dry_run` (default
-#                                 true) builds and packages without touching any
-#                                 GitHub release.
+# Manual only (workflow_dispatch): runs against the dispatched ref; `tag` is the
+# tag the version must match, `dry_run` (default true) builds and packages without
+# touching any GitHub release. Tag pushes do not start a run.
 
 'on':
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
